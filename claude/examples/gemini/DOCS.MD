@@ -372,11 +372,13 @@ func (UserSession) AddItem(ctx restate.ObjectContext, item string) (bool, error)
 ```go
 // Restate server signs requests with private key
 // Services verify signatures with public key
-server.NewRestate().
-    Bind(restate.Reflect(UserSession{},
-        // Only accept requests signed by trusted Restate server
-        options.RequireRequestIdentity(TRUSTED_PUBLIC_KEY),
-    ))
+// https://docs.restate.dev/develop/go/serving#validating-request-identity
+if err := server.NewRestate().
+  Bind(restate.Reflect(MyService{})).
+  WithIdentityV1("publickeyv1_w7YHemBctH5Ck2nQRQ47iBBqhNHy4FV7t2Usbye2A6f").
+  Start(context.Background(), ":9080"); err != nil {
+  log.Fatal(err)
+}
 ```
 
 **Security Flow**:
