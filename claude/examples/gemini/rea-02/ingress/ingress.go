@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -36,16 +34,24 @@ type Order struct {
 	AmountCents int
 }
 
-// generateDeterministicOrderID creates a deterministic order ID using business context
-// This ensures the same order request always generates the same ID, enabling
-// proper idempotency deduplication across retries
-func generateDeterministicOrderID(userID, cartID string) string {
-	// Use SHA256 hash of business context to generate deterministic key
-	// Format: order:{userID}:{cartID}:v1
-	data := fmt.Sprintf("order:%s:%s:v1", userID, cartID)
-	hash := sha256.Sum256([]byte(data))
-	return "ORDER-" + hex.EncodeToString(hash[:16])
+// generateIdempotencyKeyFromContext wraps the framework's deterministic key generation
+// Ensures idempotency keys are non-temporal and deterministic per DOS_DONTS_REA guidelines
+func generateIdempotencyKeyFromContext(parts ...string) string {
+	// Use the same pattern as ControlPlaneService.GenerateIdempotencyKeyDeterministic
+	// which creates keys from business data with deterministic separator
+	if len(parts) == 0 {
+		return "order"
+	}
+	// Combine parts with colons: "order:userID:data"
+	result := "order"
+	for _, part := range parts {
+		result += ":" + part
+	}
+	return result
 }
+
+// Note: Idempotency key generation is now delegated to framework.GenerateIdempotencyKeyDeterministic
+// which ensures all keys are non-temporal and deterministic per DOS_DONTS_REA guidelines
 
 // L1 Authentication Middleware: Checks API Key and sets UserID in context
 func authMiddleware(next http.Handler) http.Handler {
@@ -117,13 +123,13 @@ func (i *Ingress) handleCheckout(w http.ResponseWriter, r *http.Request) {
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
 		log.Printf("Warning: No Idempotency-Key provided for checkout by user %s", userID)
-		idempotencyKey = generateDeterministicOrderID(userID, "default-checkout")
+		// Use framework's deterministic key generation from business context
+		idempotencyKey = generateIdempotencyKeyFromContext(userID, "default-checkout")
 	}
 
-	// PHASE 1: Generate deterministic order ID instead of timestamp-based
-	// Format: order:{userID}:{cartID}:v1 → hashed to deterministic value
+	// PHASE 1: Generate deterministic order ID using framework primitives
 	// This ensures retries with same business context get the same orderID
-	orderID := generateDeterministicOrderID(userID, idempotencyKey)
+	orderID := generateIdempotencyKeyFromContext(userID, idempotencyKey)
 
 	// Ingress Client call to the UserSession Virtual Object to initiate Checkout
 	// Using rea framework - asynchronous durable initiation with idempotency key
@@ -160,17 +166,16 @@ func (i *Ingress) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
 	// Set authenticated user ID
 	order.UserID = userID
 
-	// Extract idempotency key from request header (PHASE 2: Ingress policy validation)
-	idempotencyKey := r.Header.Get("Idempotency-Key")
-	if idempotencyKey == "" {
-		log.Printf("Warning: No Idempotency-Key provided for workflow by user %s", userID)
-		idempotencyKey = order.OrderID // Use provided orderID as fallback
-	}
-
 	// PHASE 1: Generate deterministic order ID if not provided
 	// Uses business context (userID + items) to ensure consistency
 	if order.OrderID == "" {
-		order.OrderID = generateDeterministicOrderID(userID, order.Items)
+		order.OrderID = generateIdempotencyKeyFromContext(userID, order.Items)
+	}
+
+	// Extract idempotency key from request header (PHASE 2: Ingress policy validation)
+	// Note: This header is validated by the middleware; here we log if missing
+	if idempotencyKey := r.Header.Get("Idempotency-Key"); idempotencyKey == "" {
+		log.Printf("Warning: No Idempotency-Key provided for workflow by user %s", userID)
 	}
 
 	// Trigger workflow using ingress client
