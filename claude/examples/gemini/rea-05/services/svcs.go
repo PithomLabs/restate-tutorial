@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"rea-05/models"
+	"svcs/models"
 	"time"
 
 	"github.com/pithomlabs/rea"
@@ -16,7 +16,7 @@ import (
 
 type ShippingService struct{}
 
-func (ShippingService) InitiateShipment(ctx restate.Context, shipment models.ShipmentRequest) (bool, error) {
+func (ShippingService) InitiateShipment(ctx restate.Context, shipment svcs.ShipmentRequest) (bool, error) {
 	ctx.Log().Info("ShippingService received request", "order_id", shipment.OrderID)
 
 	// Data Plane Operation: using rea.RunWithRetry for enhanced retry patterns
@@ -109,7 +109,7 @@ func (UserSession) Checkout(ctx restate.ObjectContext, orderID string) (bool, er
 	// Placeholder: This call would typically go to an Inventory Virtual Object
 
 	// Step 2: Create Awakeable for Payment Completion
-	awakeable := restate.Awakeable[models.PaymentReceipt](ctx)
+	awakeable := restate.Awakeable[svcs.PaymentReceipt](ctx)
 	id := awakeable.Id()
 
 	// Data Plane: Send the awakeable ID to an external payment system
@@ -143,7 +143,7 @@ func (UserSession) Checkout(ctx restate.ObjectContext, orderID string) (bool, er
 	ctx.Log().Info("Session state cleared")
 
 	// Launch Saga Workflow (asynchronous)
-	orderPayload := models.Order{
+	orderPayload := svcs.Order{
 		OrderID:     orderID,
 		UserID:      userID,
 		Items:       "item-1,item-2", // Placeholder items
@@ -161,7 +161,7 @@ func (UserSession) Checkout(ctx restate.ObjectContext, orderID string) (bool, er
 type OrderFulfillmentWorkflow struct{}
 
 // The main, exactly-once execution handler for the workflow
-func (OrderFulfillmentWorkflow) Run(ctx restate.WorkflowContext, order models.Order) error {
+func (OrderFulfillmentWorkflow) Run(ctx restate.WorkflowContext, order svcs.Order) error {
 	ctx.Log().Info("Workflow started", "order_id", order.OrderID)
 
 	// L2: Use authenticated user ID from order (set by ingress)
@@ -209,7 +209,7 @@ func (OrderFulfillmentWorkflow) Run(ctx restate.WorkflowContext, order models.Or
 	ctx.Log().Info("Admin approved order", "order_id", order.OrderID)
 
 	// Step 3: Initiate Shipping (Durable Call)
-	shipmentReq := models.ShipmentRequest{OrderID: order.OrderID, Address: order.ShippingAddress}
+	shipmentReq := svcs.ShipmentRequest{OrderID: order.OrderID, Address: order.ShippingAddress}
 
 	// interservice communication, an RPC within this microservices package (svcs.go)
 	// it is not a durable promise since we don't want to pause the workflow
