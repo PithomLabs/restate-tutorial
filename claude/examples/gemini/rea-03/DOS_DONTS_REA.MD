@@ -100,10 +100,88 @@ The choice between Awakeables and Durable Promises depends on who resolves the w
 |**Durable Promise**|**Do** use `restate.Promise[T]` (wrapped by `framework.GetInternalSignal`) exclusively within **Workflows** to coordinate signals between shared handlers and the main `Run` handler.|**Don't** use Durable Promises for coordination with systems _outside_ the Restate runtime.|**DO (Wait):** `promise := framework.GetInternalSignal[bool](ctx, "approval"); result, err := promise.Result()`.|
 
 ---
-
 _**Analogy for Deterministic Execution:**_
 
 Think of Durable Execution as following a **pre-recorded script for a play.**
 
 - **Do (Control Plane):** The Restate handler code is the _Director's Instructions_. You **must** use built-in, repeatable stage directions like `restate.Sleep(duration)` or `ctx.Client().Call()` because the results of these actions are noted in the _Journal_ (the official script). When the actor (your service) crashes, Restate hands them a copy of the script and they restart exactly from the last completed scene.
 - **Don't (Data Plane):** You **must not** improvise or use external inputs without noting them. If an action, like `ctx.Run(callExternalAPI)`, is required (improvisation), Restate logs the exact result in the script (e.g., "The result was '42'") the first time it runs. If the actor restarts, they simply read "The result was '42'" from the script instead of re-calling the external API, ensuring the play remains **deterministic** and exactly-once. Using `time.Now()` or a standard Go map inside your handler is like tearing up the script and ad-libbing the next line—it guarantees chaos when the play restarts.
+
+---
+## VIII. Services
+
+This response addresses your query by detailing the purpose and usage of each Restate service type, outlining the required separation between the Control Plane and Data Plane, and providing comprehensive construction guidelines (Do's and Don'ts).
+
+---
+
+## 1. Service Typology: When to Use Which Service
+
+The Restate SDK supports three primary service types—Basic Service, Virtual Object, and Workflow—each optimized for different concerns regarding state, concurrency, and process longevity.
+
+|Service Type|Key Features & Constraints|When to Use (Rationale)|
+|:--|:--|:--|
+|**Basic Service** (Stateless Service)|Durable execution, unlimited parallel execution, no internal state between requests.|Use for **stateless business logic**, API integrations, task parallelization, ETL operations, or serving as a general orchestration point for Sagas and background jobs where concurrency is key.|
+|**Virtual Object** (Stateful/Actor)|Isolated, persistent Key/Value (K/V) state per unique key. Guarantees **single-writer consistency** (exclusive handlers run serially per key).|Use to model **stateful entities** (like user accounts, shopping carts, chat sessions, or AI agents with memory). Essential for state machines where race conditions must be strictly prevented.|
+|**Workflow**|Designed for **long-running, multi-step orchestration** with guaranteed **exactly-once execution** of the main `run` handler per workflow ID.|Use for processes requiring coordination across time, such as human approvals, user onboarding flows, or complex multi-step transactions using durable timers (`ctx.Sleep`) or internal signals (`Durable Promises`).|
+
+### Sagas and Durable Coordination
+
+- **Sagas:** The Saga pattern is implemented for **bulletproof transactions** that span multiple services. Sagas should be built within a **Workflow** or **Basic Service** to define compensating actions (rollbacks) that are executed if a non-transient failure occurs. In Go, this typically leverages the `defer` statement to register durable compensation calls.
+- **Awakeables vs. Durable Promises:**
+    - Use **Awakeables** for Services and Virtual Objects when coordinating with **external systems** (e.g., payment gateways, webhooks, human approval via API callback).
+    - Use **Durable Promises** exclusively within **Workflows** for signaling and coordination between different handlers of the _same_ workflow instance (e.g., waiting for an internal approval signal).
+
+---
+
+## 2. Control Plane vs. Data Plane Separation
+
+The robust nature of Restate applications stems from a strict architectural division required for **Durable Execution**. This separation ensures that code execution remains **deterministic** during replay after a crash.
+
+|Feature|Control Plane (Orchestration/Durable Core)|Data Plane (Business Logic/Side Effect)|
+|:--|:--|:--|
+|**Analogy**|**Sequence of Steps** (like a Dockerfile/Workflow logic).|The actual external interaction or business logic computation.|
+|**Purpose**|Defines the **flow, coordination, and state management** of the durable execution.|Handles **non-deterministic operations** and external side effects.|
+|**Mechanism**|Primitives defined in the Restate SDK context, logged in the **journal**.|Must be wrapped in **`ctx.Run(fn)`** (Go SDK: `restate.Run(ctx, fn)`).|
+|**Examples**|`ctx.Client().Call()`, `ctx.SetState()`, `ctx.Sleep()`, `ctx.Awakeable()`, `ctx.Promise()`.|External API calls, database writes/updates, sending emails, non-deterministic UUID generation, generating random numbers.|
+|**Recovery Behavior**|**Replayed** on recovery to restore the exact control flow.|**Executed once** and its result is recorded in the journal. During replay, the function body is **skipped**, and the recorded result is returned.|
+
+**Guidance on Construction:** The Control Plane is the durable backbone. Anything that defines _what_ happens next, _when_ it happens, or _where_ to store transient state belongs here. Conversely, any operation that interacts with the outside world (I/O, databases, external services) or produces a result that must be exactly-once delivered must be relegated to the Data Plane via `ctx.Run`.
+
+---
+
+## 3. General Do's and Don'ts for Service Construction
+
+Adhering to these rules is critical for ensuring the resilience and determinism guaranteed by the Restate runtime.
+
+### Construction Do's (Requirements and Best Practices)
+
+|Category|Do|Rationale/Example|
+|:--|:--|:--|
+|**Determinism & I/O**|**Do** wrap all external APIs, database interactions, and other non-deterministic I/O operations inside `ctx.Run(fn)`.|Guarantees exactly-once side effects and prevents repeating expensive or state-changing operations during replay.|
+|**Concurrency**|**Do** use Restate's durable combinators (`restate.Wait`, `restate.WaitFirst`, `RunAsync`) to run and coordinate asynchronous tasks in parallel.|Restate records the completion order of these durable operations, preserving deterministic replay logic.|
+|**Timing & Delay**|**Do** use `ctx.Sleep(d)` (or `restate.After`) for durable timers and delays.|This timer survives worker crashes, suspends execution (saving FaaS costs), and resumes at the precise remaining time.|
+|**State Management**|**Do** use `ctx.SetState()` and `ctx.GetState()` (Go SDK: `restate.Set/Get`) for managing persistent K/V state within Virtual Objects and Workflows.|Ensures state updates are consistent with the execution journal and survive failures.|
+|**API Clients**|**Do** use **Internal Clients** (`ctx.Client()`, `restate.Service()`) for service-to-service calls inside handlers.|These calls are journaled by the Control Plane, ensuring durability, retries, and exactly-once semantics.|
+|**Error Handling**|**Do** throw a `TerminalError` (or equivalent exception) for non-transient failures (e.g., invalid input, business logic failures).|Stops Restate from retrying indefinitely when recovery is impossible.|
+|**Sagas**|**Do** ensure all compensating actions defined in a Saga are themselves **idempotent**.|Compensating calls are durable RPCs that are retried until they complete successfully, meaning they must withstand multiple executions.|
+
+### Construction Don'ts (Actions to Avoid)
+
+|Category|Don't|Risk/Rationale|
+|:--|:--|:--|
+|**Context Misuse (Critical)**|**Don't** use the parent Restate context (`ctx.Get`, `ctx.Client().Call`, `ctx.Sleep`, etc.) _inside_ a `ctx.Run(fn)` closure.|This violates the determinism guarantee, as the inner function is for side effects only (`RunContext`).|
+|**Native Concurrency**|**Don't** use Go's native `goroutines`, `channels`, or `select` statements to manage or block on durable futures (like `fut.Response()`).|This introduces non-determinism, jeopardizing the integrity of the execution journal upon replay.|
+|**Blocking Objects**|**Don't** use `ctx.Sleep()` or wait for an `Awakeable` in an **exclusive handler** (`ObjectContext`) of a Virtual Object.|This blocks all subsequent calls targeting the same object key, destroying concurrency for that entity.|
+|**I/O and Time**|**Don't** call `time.Now()`, use `rand.Float64()`, or generate non-deterministic UUIDs outside of a `ctx.Run` block.|These values would differ during replay, leading to inconsistent state or unexpected control flow.|
+|**Internal Calls**|**Don't** use the **Ingress Client** (the client used by external systems) inside a Restate handler.|This bypasses Restate's durable execution engine; the call won't be journaled and will repeat during replay.|
+|**Concurrency Deadlocks**|**Don't** allow an exclusive Virtual Object handler to make a request-response call to another exclusive handler of the **same Virtual Object key**.|This creates a high risk of cross deadlocks or cycle deadlocks, halting the object's processing.|
+|**Collection Iteration**|**Don't** iterate over standard Go maps (`map[K]V`) and execute Context operations (like `ctx.Call`) inside the loop body.|Standard maps have non-deterministic iteration order, which violates replay guarantees. Use deterministic collections if ordering matters.|
+
+---
+
+### Analogy: The Resilient Chef
+
+Thinking about Control Plane (CP) versus Data Plane (DP) is like a resilient chef following a complex recipe:
+
+1. **The Recipe (Control Plane):** This is the **fixed, sequential list of durable instructions** in the chef's log: "First, reliably reserve one chicken from the inventory (Call to InventoryService). Second, durable sleep for 30 minutes while the chicken marinates. Third, reliably charge the customer (Call to PaymentService). Finally, run the delivery step (Run/Side Effect)." If the kitchen catches fire, the chef simply looks at the last successfully completed step in the log (the CP journal) and resumes from the next line.
+2. **The Ingredient Gathering and Cooking (Data Plane):** This is the **actual act of performing the side effects**, wrapped in a reliable utility. When the recipe says "run the delivery step," the chef sends a durable request to the external delivery app. This external action is non-deterministic (API call, database write, GPS check), but its result ("Delivery successful, tracking code 123") is logged by Restate _once_. If the chef restarts, the log simply tells them, "Delivery was successful, tracking code 123," and they move on, guaranteeing the delivery wasn't accidentally re-run (exactly-once delivery).
