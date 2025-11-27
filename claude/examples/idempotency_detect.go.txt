@@ -1,0 +1,95 @@
+package main
+
+import (
+	"context"
+	"fmt"
+
+	restate "github.com/restatedev/sdk-go"
+)
+
+// Type definitions
+type OrderRequest struct {
+	OrderID string  `json:"orderId"`
+	Amount  float64 `json:"amount"`
+}
+
+type PaymentRequest struct {
+	OrderID string  `json:"orderId"`
+	Amount  float64 `json:"amount"`
+}
+
+type PaymentResponse struct {
+	TransactionID string `json:"transactionId"`
+	Status        string `json:"status"`
+}
+
+// ❌ BAD: Unnecessary idempotency key within same handler
+func ProcessOrder(ctx restate.Context, req PaymentRequest) (string, error) {
+	paymentClient := ServiceClient[PaymentRequest, PaymentResponse]{
+		ServiceName: "PaymentService",
+		HandlerName: "charge",
+	}
+
+	// Framework will detect and warn: "idempotency key is unnecessary for
+	// same-handler call to PaymentService.charge (journaling already provides
+	// exactly-once execution)"
+	result, err := paymentClient.Call(
+		ctx,
+		req,
+		CallOption{
+			IdempotencyKey: fmt.Sprintf("payment-%s", req.OrderID), // REDUNDANT!
+		},
+	)
+
+	return result.TransactionID, err
+}
+
+// ✅ GOOD: No idempotency key - rely on journaling
+func ProcessOrderCorrect(ctx restate.Context, req PaymentRequest) (string, error) {
+	paymentClient := ServiceClient[PaymentRequest, PaymentResponse]{
+		ServiceName: "PaymentService",
+		HandlerName: "charge",
+	}
+
+	// No key needed - journaling provides exactly-once guarantee
+	result, err := paymentClient.Call(ctx, req)
+	return result.TransactionID, err
+}
+
+// ✅ GOOD: Idempotency key for cross-handler attach
+func CheckPaymentStatus(ctx restate.Context, orderID string) (string, error) {
+	workflowClient := WorkflowClient[PaymentRequest, PaymentResponse]{
+		ServiceName: "PaymentWorkflow",
+		HandlerName: "run",
+	}
+
+	// Key needed for attach semantics (query from different handler)
+	result, err := workflowClient.Attach(
+		ctx,
+		orderID,
+		CallOption{
+			IdempotencyKey: fmt.Sprintf("payment-workflow-%s", orderID),
+		},
+	)
+
+	return result.Status, err
+}
+
+// ✅ GOOD: Idempotency key for external ingress call
+func HandleWebhook(orderID string, amount float64) error {
+	client := NewIngressClient("http://localhost:8080", "auth-key")
+	serviceClient := IngressService[PaymentRequest, PaymentResponse](
+		client, "PaymentService", "charge",
+	)
+
+	// Key prevents duplicate webhook processing
+	_, err := serviceClient.Call(
+		context.Background(),
+		PaymentRequest{OrderID: orderID, Amount: amount},
+		IngressCallOption{
+			IdempotencyKey: fmt.Sprintf("webhook-%s", orderID),
+		},
+	)
+
+	return err
+}

@@ -1,0 +1,553 @@
+// run.go - Production example with Control Plane / Data Plane separation
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	//"yourproject/framework"
+
+	restate "github.com/restatedev/sdk-go"
+	"github.com/restatedev/sdk-go/server"
+)
+
+// -----------------------------------------------------------------------------
+// Data Plane Services
+// -----------------------------------------------------------------------------
+
+// PaymentGateway is a DataPlaneService (pure business logic)
+var ProcessPayment = NewStatelessService[OrderRequest, PaymentResult](
+	"payment.process",
+	func(rc restate.RunContext, req OrderRequest) (PaymentResult, error) {
+		GuardRunContext(rc)
+
+		rc.Log().Info("processing payment", "order_id", req.OrderID, "amount", req.Amount)
+
+		// Simulate external API call
+		time.Sleep(100 * time.Millisecond)
+
+		if req.Amount > 1000 {
+			return PaymentResult{Status: "DECLINED"}, nil
+		}
+
+		return PaymentResult{
+			Status:        "APPROVED",
+			TransactionID: "txn_" + req.OrderID,
+		}, nil
+	},
+)
+
+// InventoryService (deterministic, no external calls)
+type InventoryService struct{}
+
+func (s *InventoryService) CheckAvailability(ctx restate.Context, item string) (bool, error) {
+	if item == "unavailable_item" {
+		return false, nil
+	}
+	return true, nil
+}
+
+// -----------------------------------------------------------------------------
+// Control Plane Service
+// -----------------------------------------------------------------------------
+
+// OrderOrchestrator handles the complete order flow with saga compensation.
+type OrderOrchestrator struct{}
+
+func (o *OrderOrchestrator) Run(ctx restate.WorkflowContext, req OrderRequest) (string, error) {
+	var err error
+
+	cp := NewControlPlaneService(ctx, "order-orchestrator", "order_"+req.OrderID)
+	//defer cp.CompensateIfNeeded(&err)
+
+	// Register compensations
+	cp.RegisterCompensation("refund-payment", func(rc restate.RunContext, payload []byte) error {
+		var order OrderRequest
+		json.Unmarshal(payload, &order)
+		rc.Log().Warn("compensating: refunding payment", "order", order.OrderID)
+		return nil
+	})
+
+	cp.RegisterCompensation("release-inventory-hold", func(rc restate.RunContext, payload []byte) error {
+		var item string
+		json.Unmarshal(payload, &item)
+		rc.Log().Warn("compensating: releasing inventory", "item", item)
+		return nil
+	})
+
+	// Add compensation steps
+	_ = cp.AddCompensationStep("release-inventory-hold", req.Item, true)
+	_ = cp.AddCompensationStep("refund-payment", req, true)
+
+	// Step 1: Check inventory
+	inventoryClient := ServiceClient[string, bool]{
+		ServiceName: "InventoryService",
+		HandlerName: "CheckAvailability",
+	}
+
+	available, err := inventoryClient.Call(ctx, req.Item)
+	if err != nil {
+		return "", fmt.Errorf("inventory check failed: %w", err)
+	}
+	if !available {
+		return "", NewTerminalError(fmt.Errorf("item not available: %s", req.Item))
+	}
+
+	// Step 2: Human approval for high-value orders
+	if req.Amount > 2000 {
+		approved, err := cp.AwaitHumanApproval(ctx, req.OrderID, 24*time.Hour)
+		if err != nil {
+			return "", fmt.Errorf("approval process failed: %w", err)
+		}
+		if !approved {
+			return "", NewTerminalError(fmt.Errorf("order approval denied"))
+		}
+	}
+
+	// Step 3: Process payment
+	paymentResult, err := ProcessPayment.Execute(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("payment processing failed: %w", err)
+	}
+	if paymentResult.Status != "APPROVED" {
+		return "", NewTerminalError(fmt.Errorf("payment declined: %s", paymentResult.Status))
+	}
+
+	return fmt.Sprintf("Order %s completed successfully", req.OrderID), nil
+}
+
+/*
+// AwaitHumanApproval coordinates human-in-the-loop with durable timeout.
+func (cp *ControlPlaneService) AwaitHumanApproval(
+	ctx restate.Context,
+	approvalID string,
+	timeout time.Duration,
+) (approved bool, err error) {
+	awakeable := WaitForExternalSignal[bool](ctx)
+	awakeableID := awakeable.Id()
+
+	ctx.Log().Info("controlplane.awaiting_approval", "approval_id", approvalID, "awakeable_id", awakeableID)
+
+	// Race against timeout
+	timeoutFuture := restate.After(ctx, timeout)
+	winner, err := restate.WaitFirst(ctx, awakeable, timeoutFuture)
+	if err != nil {
+		return false, fmt.Errorf("approval race failed: %w", err)
+	}
+
+	// Check if timeout occurred - AfterFuture completes with nil error on timeout
+	if winner == timeoutFuture {
+		ctx.Log().Warn("controlplane.approval_timeout", "approval_id", approvalID)
+		return false, restate.TerminalError(fmt.Errorf("approval timeout after %v", timeout), 408)
+	}
+
+	// Get approval result
+	result, err := awakeable.Result()
+	if err != nil {
+		return false, fmt.Errorf("approval result failed: %w", err)
+	}
+
+	ctx.Log().Info("controlplane.approval_result", "approval_id", approvalID, "approved", result)
+	return result, nil
+}
+*/
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
+
+func main() {
+	services := []any{
+		&InventoryService{},
+		&InventoryService2{},
+		&OrderOrchestrator{},
+		&ShoppingCartService{},
+		&UserSessionService{},
+	}
+
+	for _, svc := range services {
+		if err := ValidateServiceDefinition(svc); err != nil {
+			log.Fatalf("Service validation failed: %v", err)
+		}
+	}
+
+	rt := server.NewRestate().
+		Bind(restate.Reflect(&InventoryService{})).
+		Bind(restate.Reflect(&InventoryService2{})).
+		Bind(restate.Reflect(&OrderOrchestrator{})).
+		Bind(restate.Reflect(&ShoppingCartService{})).
+		Bind(restate.Reflect(&UserSessionService{}))
+
+	log.Println("Starting Restate services on :5559")
+	if err := rt.Start(context.Background(), ":5559"); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+// Data types
+type OrderRequest struct {
+	OrderID string  `json:"order_id"`
+	Item    string  `json:"item"`
+	Amount  float64 `json:"amount"`
+	UserID  string  `json:"user_id"`
+}
+
+type PaymentResult struct {
+	Status        string `json:"status"`
+	TransactionID string `json:"transaction_id"`
+}
+
+/*
+add examples to attached main.go illustrating stateful services using durable
+object like cart services using the attached framework.go following constraints
+from previously attached 2 markdown files
+*/
+
+// -----------------------------------------------------------------------------
+// Data Plane Services (Stateless)
+// -----------------------------------------------------------------------------
+
+// PaymentGateway is a DataPlaneService (pure business logic)
+var ProcessPayment2 = NewStatelessService[OrderRequest, PaymentResult](
+	"payment.process",
+	func(rc restate.RunContext, req OrderRequest) (PaymentResult, error) {
+		GuardRunContext(rc)
+
+		rc.Log().Info("processing payment", "order_id", req.OrderID, "amount", req.Amount)
+
+		// Simulate external API call
+		time.Sleep(100 * time.Millisecond)
+
+		if req.Amount > 1000 {
+			return PaymentResult{Status: "DECLINED"}, nil
+		}
+
+		return PaymentResult{
+			Status:        "APPROVED",
+			TransactionID: "txn_" + req.OrderID,
+		}, nil
+	},
+)
+
+// InventoryService2 (deterministic, no external calls)
+type InventoryService2 struct{}
+
+func (s *InventoryService2) CheckAvailability(ctx restate.Context, item string) (bool, error) {
+	if item == "unavailable_item" {
+		return false, nil
+	}
+	return true, nil
+}
+
+// -----------------------------------------------------------------------------
+// Data Plane Services (Stateful - Virtual Objects)
+// -----------------------------------------------------------------------------
+
+// ShoppingCartService manages per-user shopping cart state
+// Uses ObjectContext (exclusive) for mutations and ObjectSharedContext for queries
+type ShoppingCartService struct{}
+
+// CartItem represents a single item in the cart
+type CartItem struct {
+	ProductID string  `json:"product_id"`
+	Name      string  `json:"name"`
+	Price     float64 `json:"price"`
+	Quantity  int     `json:"quantity"`
+}
+
+// AddItemRequest is the input for adding items to cart
+type AddItemRequest struct {
+	Item CartItem `json:"item"`
+}
+
+// AddItem is an EXCLUSIVE handler (read/write state)
+// DO: Use ObjectContext for state mutations
+// DO: Use framework's State[T] for type-safe access
+func (s *ShoppingCartService) AddItem(ctx restate.ObjectContext, req AddItemRequest) (Void, error) {
+	userID := restate.Key(ctx) // Virtual object key = user ID
+	ctx.Log().Info("cart: adding item", "user", userID, "product", req.Item.ProductID)
+
+	// Get current cart items using type-safe state accessor
+	cartState := NewState[[]CartItem](ctx, "items")
+	items, err := cartState.Get()
+	if err != nil {
+		return Void{}, fmt.Errorf("failed to get cart: %w", err)
+	}
+
+	// Check if item already exists (update quantity)
+	found := false
+	for i := range items {
+		if items[i].ProductID == req.Item.ProductID {
+			items[i].Quantity += req.Item.Quantity
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		items = append(items, req.Item)
+	}
+
+	// Persist updated cart
+	if err := cartState.Set(items); err != nil {
+		return Void{}, fmt.Errorf("failed to save cart: %w", err)
+	}
+
+	ctx.Log().Info("cart: item added", "user", userID, "total_items", len(items))
+	return Void{}, nil
+}
+
+// RemoveItem is an EXCLUSIVE handler (read/write state)
+func (s *ShoppingCartService) RemoveItem(ctx restate.ObjectContext, productID string) (Void, error) {
+	userID := restate.Key(ctx)
+	ctx.Log().Info("cart: removing item", "user", userID, "product", productID)
+
+	cartState := NewState[[]CartItem](ctx, "items")
+	items, err := cartState.Get()
+	if err != nil {
+		return Void{}, fmt.Errorf("failed to get cart: %w", err)
+	}
+
+	// Filter out the item
+	filtered := make([]CartItem, 0, len(items))
+	for _, item := range items {
+		if item.ProductID != productID {
+			filtered = append(filtered, item)
+		}
+	}
+
+	if err := cartState.Set(filtered); err != nil {
+		return Void{}, fmt.Errorf("failed to save cart: %w", err)
+	}
+
+	ctx.Log().Info("cart: item removed", "user", userID, "remaining", len(filtered))
+	return Void{}, nil
+}
+
+// GetCart is a SHARED handler (read-only state)
+// DO: Use ObjectSharedContext for concurrent read access
+// DON'T: Attempt to write state from shared handler (framework will block)
+func (s *ShoppingCartService) GetCart(ctx restate.ObjectSharedContext) ([]CartItem, error) {
+	userID := restate.Key(ctx)
+	ctx.Log().Info("cart: fetching cart", "user", userID)
+
+	// Read-only state access - safe for concurrent execution
+	cartState := NewState[[]CartItem](ctx, "items")
+	items, err := cartState.Get()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cart: %w", err)
+	}
+
+	return items, nil
+}
+
+// CalculateTotal is a SHARED handler (read-only computation)
+// Demonstrates concurrent read pattern for analytics/reporting
+func (s *ShoppingCartService) CalculateTotal(ctx restate.ObjectSharedContext) (float64, error) {
+	userID := restate.Key(ctx)
+
+	cartState := NewState[[]CartItem](ctx, "items")
+	items, err := cartState.Get()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get cart: %w", err)
+	}
+
+	var total float64
+	for _, item := range items {
+		total += item.Price * float64(item.Quantity)
+	}
+
+	ctx.Log().Info("cart: calculated total", "user", userID, "total", total)
+	return total, nil
+}
+
+type CheckoutResult struct {
+	OrderID string
+	Total   float64
+	Items   int
+}
+
+// Checkout is an EXCLUSIVE handler that coordinates with control plane
+// DO: Use this to transition cart state and trigger workflows
+// DON'T: Sleep or wait for awakeables here (blocks the cart key)
+func (s *ShoppingCartService) Checkout(ctx restate.ObjectContext, orderID string) (CheckoutResult, error) {
+	userID := restate.Key(ctx)
+	ctx.Log().Info("cart: initiating checkout", "user", userID, "order", orderID)
+
+	// Get cart items
+	cartState := NewState[[]CartItem](ctx, "items")
+	items, err := cartState.Get()
+	if err != nil {
+		return CheckoutResult{}, fmt.Errorf("failed to get cart: %w", err)
+	}
+
+	if len(items) == 0 {
+		return CheckoutResult{}, NewTerminalError(fmt.Errorf("cannot checkout empty cart"))
+	}
+
+	// Calculate total
+	var total float64
+	for _, item := range items {
+		total += item.Price * float64(item.Quantity)
+	}
+
+	// Trigger order workflow (fire-and-forget to avoid blocking)
+	// DON'T: Use Request() here - would block cart for all other users
+	// DO: Use Send() to hand off to control plane immediately
+	workflowClient := ServiceClient[OrderRequest, string]{
+		ServiceName: "OrderOrchestrator",
+		HandlerName: "Run",
+	}
+
+	orderReq := OrderRequest{
+		OrderID: orderID,
+		UserID:  userID,
+		Amount:  total,
+		Item:    fmt.Sprintf("%d items", len(items)),
+	}
+
+	// Use delayed send to allow time for cart state to settle
+	workflowClient.Send(ctx, orderReq, CallOption{
+		IdempotencyKey: "order_" + orderID,
+		Delay:          100 * time.Millisecond,
+	})
+
+	// Archive cart to history before clearing
+	historyState := NewState[[]CartItem](ctx, "checkout_history_"+orderID)
+	if err := historyState.Set(items); err != nil {
+		ctx.Log().Warn("cart: failed to archive", "error", err.Error())
+	}
+
+	// Clear active cart
+	if err := cartState.Clear(); err != nil {
+		return CheckoutResult{}, fmt.Errorf("failed to clear cart: %w", err)
+	}
+
+	ctx.Log().Info("cart: checkout completed", "user", userID, "order", orderID, "total", total)
+	return CheckoutResult{
+		OrderID: orderID,
+		Total:   total,
+		Items:   len(items),
+	}, nil
+}
+
+// ClearCart is an EXCLUSIVE handler for administrative operations
+func (s *ShoppingCartService) ClearCart(ctx restate.ObjectContext) (Void, error) {
+	userID := restate.Key(ctx)
+	ctx.Log().Info("cart: clearing", "user", userID)
+
+	// Use framework's ClearAll for complete state reset
+	if err := ClearAll(ctx); err != nil {
+		return Void{}, fmt.Errorf("failed to clear cart: %w", err)
+	}
+
+	return Void{}, nil
+}
+
+// -----------------------------------------------------------------------------
+// User Session Service (Stateful - Virtual Object)
+// Demonstrates AI agent session management pattern
+// -----------------------------------------------------------------------------
+
+// UserSessionService manages stateful user sessions (e.g., for AI agents)
+type UserSessionService struct{}
+
+// SessionState tracks conversation history and user context
+type SessionState struct {
+	Messages     []string          `json:"messages"`
+	Context      map[string]string `json:"context"`
+	LastActive   time.Time         `json:"last_active"`
+	MessageCount int               `json:"message_count"`
+}
+
+// AddMessage is EXCLUSIVE - ensures one message processed at a time per session
+// DO: Use this pattern for AI agents to prevent race conditions in conversation history
+func (s *UserSessionService) AddMessage(ctx restate.ObjectContext, message string) (Void, error) {
+	sessionID := restate.Key(ctx)
+	ctx.Log().Info("session: adding message", "session", sessionID)
+
+	// Get or initialize session state
+	sessionState := NewState[SessionState](ctx, "state")
+	state, err := sessionState.Get()
+	if err != nil {
+		// Initialize new session
+		state = SessionState{
+			Messages: make([]string, 0),
+			Context:  make(map[string]string),
+		}
+	}
+
+	// Update state
+	state.Messages = append(state.Messages, message)
+	state.LastActive = time.Now()
+	state.MessageCount++
+
+	// Enforce message limit to prevent unbounded growth
+	if len(state.Messages) > 100 {
+		state.Messages = state.Messages[len(state.Messages)-100:]
+	}
+
+	if err := sessionState.Set(state); err != nil {
+		return Void{}, fmt.Errorf("failed to save session: %w", err)
+	}
+
+	ctx.Log().Info("session: message added", "session", sessionID, "count", state.MessageCount)
+	return Void{}, nil
+}
+
+// GetHistory is SHARED - allows concurrent reads for UI/analytics
+func (s *UserSessionService) GetHistory(ctx restate.ObjectSharedContext) (SessionState, error) {
+	sessionID := restate.Key(ctx)
+
+	sessionState := NewState[SessionState](ctx, "state")
+	state, err := sessionState.Get()
+	if err != nil {
+		return SessionState{}, fmt.Errorf("failed to get session: %w", err)
+	}
+
+	ctx.Log().Info("session: history retrieved", "session", sessionID, "messages", len(state.Messages))
+	return state, nil
+}
+
+type UpdateContextRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// UpdateContext is EXCLUSIVE - modifies session metadata
+// panic: Incorrect number of arguments for handler 'UserSessionService/UpdateContext':
+// a restate handler should have a ctx parameter and optionally *one* input parameter
+// func (s *UserSessionService) UpdateContext(ctx restate.ObjectContext, key, value string) (Void, error) {
+func (s *UserSessionService) UpdateContext(ctx restate.ObjectContext, req UpdateContextRequest) (Void, error) {
+	sessionID := restate.Key(ctx)
+
+	sessionState := NewState[SessionState](ctx, "state")
+	state, err := sessionState.Get()
+	if err != nil {
+		// Initialize new session with all fields properly initialized
+		state = SessionState{
+			Messages: make([]string, 0),
+			Context:  make(map[string]string),
+		}
+	}
+
+	// Ensure Context map is initialized even if state existed but map was nil else
+	// ERROR Invocation panicked, returning error to Restate
+	// method=UserSessionService/UpdateContext
+	// invocationID=inv_18GLjAEp4DyJ3qbW2umqvnoEfBc3rNUrhA err="assignment to entry in nil map"
+	if state.Context == nil {
+		state.Context = make(map[string]string)
+	}
+	state.Context[req.Key] = req.Value
+	state.LastActive = time.Now()
+
+	if err := sessionState.Set(state); err != nil {
+		return Void{}, fmt.Errorf("failed to update context: %w", err)
+	}
+
+	ctx.Log().Info("session: context updated", "session", sessionID, "key", req.Key)
+	return Void{}, nil
+}

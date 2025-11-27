@@ -1,0 +1,62 @@
+package main
+
+import (
+	"context"
+	"log"
+
+	restate "github.com/restatedev/sdk-go"
+	"github.com/restatedev/sdk-go/server"
+)
+
+// EmailService sends notifications
+type EmailService struct{}
+
+type EmailRequest struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+type EmailResponse struct {
+	MessageID string `json:"messageId"`
+	Sent      bool   `json:"sent"`
+}
+
+// Send sends an email (stateless operation)
+func (s *EmailService) Send(ctx restate.Context, req EmailRequest) (EmailResponse, error) {
+	// Use restate.Run for side effect (external API call)
+	messageID, err := restate.Run(ctx, func(ctx restate.RunContext) (string, error) {
+		// Call external email provider
+		return sendEmailViaProvider(req.To, req.Subject, req.Body)
+	})
+
+	if err != nil {
+		return EmailResponse{}, err
+	}
+
+	// Log success
+	ctx.Log().Info("Email sent",
+		"to", req.To,
+		"messageId", messageID)
+
+	return EmailResponse{
+		MessageID: messageID,
+		Sent:      true,
+	}, nil
+}
+
+// Register service
+func main() {
+	server := server.NewRestate().
+		Bind(restate.Reflect(&EmailService{}))
+	log.Println("Starting Restate runtime (examples) on :2223")
+	if err := server.Start(context.Background(), ":2223"); err != nil {
+		log.Fatalf("restateruntime: %v", err)
+	}
+
+}
+
+func sendEmailViaProvider(to, subject, body string) (string, error) {
+	// External API call
+	return "msg-123", nil
+}

@@ -1,0 +1,11 @@
+- [x] Read input files <!-- id: 0 -->
+    - [x] Read DOS_DONTS_MEGA.MD <!-- id: 1 -->
+    - [x] Read AGENTS.MD <!-- id: 2 -->
+    - [x] Read framework.go <!-- id: 3 -->
+- [x] Analyze and Draft Report <!-- id: 4 -->
+    - [x] Analyze State Invocation & Management <!-- id: 5 -->
+    - [x] Analyze Communication (Interservice, Ingress, External) <!-- id: 6 -->
+    - [x] Analyze Side Effects & Guardrails <!-- id: 7 -->
+    - [x] Analyze Advanced Patterns (Saga, Security, Idempotency) <!-- id: 8 -->
+    - [x] Analyze Orchestration & Workflow <!-- id: 9 -->
+    - [x] Write ANTIGRAVITY.MD <!-- id: 10 -->

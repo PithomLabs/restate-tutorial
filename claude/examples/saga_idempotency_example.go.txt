@@ -1,0 +1,110 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+
+	//"github.com/restatedev/examples/rea2/claude"
+	restate "github.com/restatedev/sdk-go"
+)
+
+// Example: Using ValidateCompensationIdempotent
+
+type PaymentData struct {
+	PaymentID string  `json:"payment_id"`
+	Amount    float64 `json:"amount"`
+	OrderID   string  `json:"order_id"`
+}
+
+// ✅ GOOD: Idempotent compensation using ValidateCompensationIdempotent
+func ExampleSagaWithIdempotentCompensation(ctx restate.WorkflowContext, orderID string) error {
+	saga := NewSaga(ctx, "order-saga", nil)
+
+	// Register idempotent compensation handler
+	saga.Register("charge_payment", ValidateCompensationIdempotent(
+		"charge_payment",
+		func(rc restate.RunContext, payload []byte) error {
+			var data PaymentData
+			if err := json.Unmarshal(payload, &data); err != nil {
+				return err
+			}
+
+			// ✅ Idempotent: payment provider handles deduplication via order ID
+			return refundPaymentIdempotent(data.PaymentID, data.OrderID)
+		},
+	))
+
+	// Add and execute saga step
+	paymentData := PaymentData{
+		PaymentID: "pay_123",
+		Amount:    99.99,
+		OrderID:   orderID,
+	}
+
+	if err := saga.Add("charge_payment", paymentData, true); err != nil {
+		return err
+	}
+
+	// Execute payment (will trigger compensation on error)
+	// ... rest of saga logic
+
+	return nil
+}
+
+// ❌ BAD: Non-idempotent compensation (would be run multiple times on retry)
+func ExampleSagaWithBadCompensation(ctx restate.WorkflowContext, orderID string) error {
+	saga := NewSaga(ctx, "order-saga", nil)
+
+	// Even with ValidateCompensationIdempotent, this is still non-idempotent!
+	saga.Register("increment_counter", ValidateCompensationIdempotent(
+		"increment_counter",
+		func(rc restate.RunContext, payload []byte) error {
+			// ❌ BAD: Increments on every retry, not idempotent!
+			return decrementCounter("order_counter")
+		},
+	))
+
+	return nil
+}
+
+// ✅ GOOD: Fixed version - set absolute value instead
+func ExampleSagaWithFixedCompensation(ctx restate.WorkflowContext) error {
+	saga := NewSaga(ctx, "order-saga", nil)
+
+	type CounterData struct {
+		CounterID     string `json:"counter_id"`
+		PreviousValue int    `json:"previous_value"`
+		IncrementedBy int    `json:"incremented_by"`
+	}
+
+	saga.Register("increment_counter", ValidateCompensationIdempotent(
+		"increment_counter",
+		func(rc restate.RunContext, payload []byte) error {
+			var data CounterData
+			if err := json.Unmarshal(payload, &data); err != nil {
+				return err
+			}
+
+			// ✅ GOOD: Set to exact previous value (idempotent)
+			return setCounterValue(data.CounterID, data.PreviousValue)
+		},
+	))
+
+	return nil
+}
+
+// Mock functions for examples
+func refundPaymentIdempotent(paymentID, orderID string) error {
+	fmt.Printf("Refunding payment %s for order %s\n", paymentID, orderID)
+	return nil
+}
+
+func decrementCounter(counterID string) error {
+	fmt.Printf("Decrementing counter %s\n", counterID)
+	return nil
+}
+
+func setCounterValue(counterID string, value int) error {
+	fmt.Printf("Setting counter %s to %d\n", counterID, value)
+	return nil
+}

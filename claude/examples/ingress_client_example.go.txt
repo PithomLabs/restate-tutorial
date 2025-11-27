@@ -1,0 +1,154 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+	//. "github.com/restatedev/examples/rea2/claude"
+)
+
+// Example demonstrates using the IngressClient to call Restate services from an external application
+func main() {
+	// Create an ingress client for calling Restate from outside a handler
+	client := NewIngressClient("http://localhost:8080", "your-auth-key")
+
+	// Example 1: Call a service with an idempotency key (enables Attach)
+	fmt.Println("=== Example 1: Service Call with Idempotency Key ===")
+	serviceClient := IngressService[OrderRequest, OrderResponse](client, "OrderService", "processOrder")
+	idempotencyKey := "order-12345"
+	result, err := serviceClient.Call(
+		context.Background(),
+		OrderRequest{
+			OrderID: "order-12345",
+			Items:   []string{"item1", "item2"},
+		},
+		IngressCallOption{
+			IdempotencyKey: idempotencyKey,
+			ValidationMode: IdempotencyValidationWarn, // or Fail, or Disabled
+		},
+	)
+	if err != nil {
+		log.Fatalf("Service call failed: %v", err)
+	}
+	fmt.Printf("Order processed: %+v\n\n", result)
+
+	// Example 2: Attach to the same invocation using the idempotency key
+	fmt.Println("=== Example 2: Attach to Service by Idempotency Key ===")
+	attachedResult, err := serviceClient.AttachByIdempotencyKey(
+		context.Background(),
+		idempotencyKey,
+	)
+	if err != nil {
+		log.Fatalf("Attach failed: %v", err)
+	}
+	fmt.Printf("Attached result: %+v\n\n", attachedResult)
+
+	// Example 3: Submit a workflow
+	fmt.Println("=== Example 3: Submit Workflow ===")
+	workflowClient := IngressWorkflow[WorkflowInput, WorkflowOutput](client, "OrderWorkflow", "run")
+
+	workflowID := "workflow-789"
+	invocationID, err := workflowClient.Submit(
+		context.Background(),
+		workflowID,
+		WorkflowInput{Data: "some data"},
+		IngressCallOption{
+			IdempotencyKey: "workflow-idempotency-123",
+			Delay:          5 * time.Second,
+		},
+	)
+	if err != nil {
+		log.Fatalf("Workflow submit failed: %v", err)
+	}
+	fmt.Printf("Workflow submitted with invocation ID: %s\n\n", invocationID)
+
+	// Example 4: Attach to workflow to get result
+	fmt.Println("=== Example 4: Attach to Workflow ===")
+	workflowResult, err := workflowClient.Attach(context.Background(), workflowID)
+	if err != nil {
+		log.Fatalf("Workflow attach failed: %v", err)
+	}
+	fmt.Printf("Workflow result: %+v\n\n", workflowResult)
+
+	// Example 5: Send (fire-and-forget) to a service
+	fmt.Println("=== Example 5: Send (Fire-and-Forget) ===")
+	sendClient := IngressService[NotificationRequest, NotificationResponse](client, "NotificationService", "sendEmail")
+
+	invID, err := sendClient.Send(
+		context.Background(),
+		NotificationRequest{Email: "user@example.com", Message: "Hello!"},
+		IngressCallOption{
+			IdempotencyKey: "notification-456",
+		},
+	)
+	if err != nil {
+		log.Fatalf("Send failed: %v", err)
+	}
+	fmt.Printf("Notification sent with invocation ID: %s\n\n", invID)
+
+	// Example 6: Virtual Object call
+	fmt.Println("=== Example 6: Virtual Object Call ===")
+	objectClient := IngressObject[UpdateRequest, UpdateResponse](client, "UserObject", "updateProfile")
+
+	objectResult, err := objectClient.Call(
+		context.Background(),
+		"user-123", // object key
+		UpdateRequest{Name: "John Doe"},
+		IngressCallOption{
+			IdempotencyKey: "update-profile-789",
+		},
+	)
+	if err != nil {
+		log.Fatalf("Object call failed: %v", err)
+	}
+	fmt.Printf("Object result: %+v\n\n", objectResult)
+
+	// Example 7: Attach to object invocation
+	fmt.Println("=== Example 7: Attach to Object by Idempotency Key ===")
+	attachedObjResult, err := objectClient.AttachByIdempotencyKey(
+		context.Background(),
+		"user-123",
+		"update-profile-789",
+	)
+	if err != nil {
+		log.Fatalf("Object attach failed: %v", err)
+	}
+	fmt.Printf("Attached object result: %+v\n\n", attachedObjResult)
+}
+
+// Example types
+type OrderRequest struct {
+	OrderID string   `json:"orderId"`
+	Items   []string `json:"items"`
+}
+
+type OrderResponse struct {
+	OrderID string `json:"orderId"`
+	Status  string `json:"status"`
+}
+
+type WorkflowInput struct {
+	Data string `json:"data"`
+}
+
+type WorkflowOutput struct {
+	Result string `json:"result"`
+}
+
+type NotificationRequest struct {
+	Email   string `json:"email"`
+	Message string `json:"message"`
+}
+
+type NotificationResponse struct {
+	Sent bool `json:"sent"`
+}
+
+type UpdateRequest struct {
+	Name string `json:"name"`
+}
+
+type UpdateResponse struct {
+	Updated bool `json:"updated"`
+}

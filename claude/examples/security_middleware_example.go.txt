@@ -1,0 +1,270 @@
+package main
+
+// Package examples provides reference examples for using the security middleware.
+//
+// NOTE: These examples require the framework package to be properly imported.
+// To use these examples:
+// 1. Ensure your go.mod includes the framework package
+// 2. Uncomment the framework import line below
+// 3. Update import paths to match your module structure
+//
+// These are meant as reference documentation - copy and adapt for your use case.
+
+import (
+	"log"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	//. "github.com/restatedev/examples/rea2/claude"
+	//restate "github.com/restatedev/sdk-go"
+)
+
+// Example 1: Basic Security Middleware Usage
+//
+// This example shows minimal setup. For production, see Example 5.
+func ExampleSecurityMiddleware() {
+	// NOTE: This example requires importing the framework package
+	// Uncomment the import and these function calls:
+	//
+	// config := DefaultSecurityConfig()
+	// publicKey,_ := ParseSigningKey(os.Getenv("RESTATE_PUBLIC_KEY"))
+	// config.SigningKeys = []ed25519.PublicKey{publicKey}
+	// config.ValidationMode = SecurityModeStrict
+	// config.RequireHTTPS = true
+	// validator := NewSecurityValidator(config, logger)
+	//
+	// securedHandler := SecurityMiddleware(validator)(restateHandler)
+	// http.Handle("/restate", securedHandler)
+
+	// Minimal compilable placeholder:
+	_ = os.Getenv("RESTATE_PUBLIC_KEY")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	_ = logger
+
+	// Your Restate handler
+	restateHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// In real usage, wrap with SecurityMiddleware:
+	// securedHandler := SecurityMiddleware(validator)(restateHandler)
+	http.Handle("/restate", restateHandler)
+
+	// Start server
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// Example 2: Multiple Endpoints with Different Security Levels
+func ExampleMultiLevelSecurity() {
+	// Strict validator for production endpoints
+	strictConfig := DefaultSecurityConfig()
+	strictConfig.ValidationMode = SecurityModeStrict
+	strictValidator := NewSecurityValidator(strictConfig, slog.Default())
+
+	// Permissive validator for development endpoints
+	permissiveConfig := DefaultSecurityConfig()
+	permissiveConfig.ValidationMode = SecurityModePermissive
+	permissiveValidator := NewSecurityValidator(permissiveConfig, slog.Default())
+
+	// Disabled validator for health checks
+	disabledConfig := DefaultSecurityConfig()
+	disabledConfig.ValidationMode = SecurityModeDisabled
+	disabledValidator := NewSecurityValidator(disabledConfig, slog.Default())
+
+	// Production Restate endpoint - strict
+	http.Handle("/restate",
+		SecurityMiddleware(strictValidator)(prodHandler()))
+
+	// Development Restate endpoint - permissive
+	http.Handle("/restate/dev",
+		SecurityMiddleware(permissiveValidator)(devHandler()))
+
+	// Health check endpoint - no security
+	http.Handle("/health",
+		SecurityMiddleware(disabledValidator)(healthHandler()))
+
+	http.ListenAndServe(":8080", nil)
+}
+
+// Example 3: SecureHandlerFunc Convenience Wrapper
+func ExampleSecureHandlerFunc() {
+	config := DefaultSecurityConfig()
+	validator := NewSecurityValidator(config, slog.Default())
+
+	// Secure a single handler function
+	http.HandleFunc("/restate", SecureHandlerFunc(validator, func(w http.ResponseWriter, r *http.Request) {
+		// Your Restate handler logic
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Secured endpoint"))
+	}))
+
+	http.ListenAndServe(":8080", nil)
+}
+
+// Example 4: Secure Entire Server with ServeMux
+func ExampleSecureServer() {
+	config := DefaultSecurityConfig()
+	validator := NewSecurityValidator(config, slog.Default())
+
+	// Create mux with multiple endpoints
+	mux := http.NewServeMux()
+	mux.HandleFunc("/restate", restateEndpoint)
+	mux.HandleFunc("/restate/discovery", discoveryEndpoint)
+	mux.HandleFunc("/restate/awakeables", awakeablesEndpoint)
+
+	// Wrap entire mux with security
+	securedMux := SecureServer(validator, mux)
+
+	// All endpoints now require valid signatures
+	http.ListenAndServe(":8080", securedMux)
+}
+
+// Example 5: Production Configuration with Environment Variables
+func ExampleProductionSetup() {
+	// Load configuration from environment
+	config := SecurityConfig{
+		EnableRequestValidation: getBoolEnv("RESTATE_VALIDATE_REQUESTS", true),
+		RequireHTTPS:            getBoolEnv("RESTATE_REQUIRE_HTTPS", true),
+		RestrictPublicAccess:    getBoolEnv("RESTATE_RESTRICT_PUBLIC", true),
+		ValidationMode:          SecurityValidationMode(getEnv("RESTATE_VALIDATION_MODE", "strict")),
+		AllowedOrigins:          getStringSliceEnv("RESTATE_ALLOWED_ORIGINS"),
+	}
+
+	// Load signing keys
+	keyStrings := getStringSliceEnv("RESTATE_SIGNING_KEYS")
+	keys, err := ParseSigningKeys(keyStrings)
+	if err != nil {
+		log.Fatalf("Failed to parse signing keys: %v", err)
+	}
+	config.SigningKeys = keys
+
+	// Create validator
+	validator := NewSecurityValidator(config, slog.Default())
+
+	// Setup server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/restate", restateEndpoint)
+
+	securedMux := SecureServer(validator, mux)
+
+	// Log security configuration
+	slog.Info("Starting secure server",
+		"validation_enabled", config.EnableRequestValidation,
+		"https_required", config.RequireHTTPS,
+		"validation_mode", config.ValidationMode,
+		"num_signing_keys", len(config.SigningKeys),
+		"num_allowed_origins", len(config.AllowedOrigins))
+
+	log.Fatal(http.ListenAndServe(":8080", securedMux))
+}
+
+// Example 6: Custom Middleware Chain
+func ExampleMiddlewareChain() {
+	config := DefaultSecurityConfig()
+	validator := NewSecurityValidator(config, slog.Default())
+
+	// Build middleware chain
+	handler := loggingMiddleware(
+		corsMiddleware(
+			SecurityMiddleware(validator)(
+				restateHandler(),
+			),
+		),
+	)
+
+	http.Handle("/restate", handler)
+	http.ListenAndServe(":8080", nil)
+}
+
+// Helper middleware examples
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("Request received", "method", r.Method, "path", r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Helper handler constructors
+func prodHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Production endpoint"))
+	})
+}
+
+func devHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Development endpoint"))
+	})
+}
+
+func healthHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+}
+
+func restateHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Restate handler"))
+	})
+}
+
+func restateEndpoint(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Restate endpoint"))
+}
+
+func discoveryEndpoint(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Discovery endpoint"))
+}
+
+func awakeablesEndpoint(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Awakeables endpoint"))
+}
+
+// Environment helper functions
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getBoolEnv(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value == "true" || value == "1"
+}
+
+func getStringSliceEnv(key string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+	// Assume comma-separated
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
