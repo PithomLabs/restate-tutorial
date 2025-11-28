@@ -153,7 +153,8 @@ Traditional distributed systems are hard:
 # Go 1.22 or higher
 go version  # Should be 1.22+
 
-# Docker (for running Restate locally)
+# Docker is optional (for running Restate locally) 
+# You can download Restate binary at https://github.com/restatedev/restate/releases
 docker --version
 
 # Git
@@ -164,7 +165,7 @@ git --version
 
 ```bash
 # Install Restate SDK for Go
-go get github.com/restatedev/sdk-go@v0.13.1
+go get github.com/restatedev/sdk-go
 
 # Run Restate server (local development)
 docker run -d --name restate \

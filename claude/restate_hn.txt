@@ -1,0 +1,830 @@
+Show HN: Restate – Low-latency durable workflows for JavaScript/Java, in Rust (restate.dev)
+185 points by sewen on June 12, 2024 | hide | past | favorite | 109 comments
+We'd love to share our work with you: Restate, a system for workflows-as-code (durable execution). With SDKs in JS/Java/Kotlin and a lightweight runtime built in Rust/Tokio.
+https://github.com/restatedev/ https://restate.dev/
+
+It is free and open, SDKs are MIT-licensed, runtime permissive BSL (basically just the minimal Amazon defense). We worked on that for a bit over a year. A few points I think are worth mentioning:
+
+- Restate's runtime is a single binary, self-contained, no dependencies aside from a durable disk. It contains basically a lightweight integrated version of a durable log, workflow state machine, state storage, etc. That makes it very compact and easy to run both on a laptop and a server.
+
+- Restate implements durable execution not only for workflows, but the core building block is durable RPC handlers (or event handler). It adds a few concepts on top of durable execution, like virtual objects (turn RPC handlers into virtual actors), durable communication, and durable promises. Here are more details: https://restate.dev/programming-model
+
+- Core design goal for APIs was to keep a familiar style. An app developer should look at Restate examples and say "hey, that looks quite familiar". You can let us know if that worked out.
+
+- Basically every operation (handler invocation, step, ...) goes through a consensus layer, for a high degree of resilience and consistency.
+
+- The lightweight log-centric architecture gives Restate still good latencies: For example around 50ms roundtrip (invoke to result) for a 3-step durable workflow handler (Restate on EBS with fsync for every step).
+
+We'd love to hear what you think of it!
+
+
+	
+BenoitP on June 12, 2024 | next [–]
+
+For context (because he's too good to brag) OP is among the original creators of Apache Flink.
+Question for OP: I'd bet Flink's Statefuns comes in Restate's story. Could you please comment on this? Maybe Statefuns we're sort of a plugin, and you guys wanted to rebase to the core of a distributed function?
+
+
+	
+sewen on June 12, 2024 | parent | next [–]
+
+Thank you!
+Yes, Flink Stateful Functions were a first experiment to build a system for the use cases we have here. Specifically in Virtual Objects you can see that legacy.
+
+With Stateful Functions, we quickly realized that we needed something built for transactions, while Flink is built for analytics. That manifests in many ways, maybe most obviously in the latency: Transactional durability takes seconds in Flink (checkpoint interval) and milliseconds in Restate.
+
+Also, we could give Restate a very different dev ex, more compatible with modern app development. Flink comes from a data engineering side, very different set of integrations, tools, etc.
+
+
+	
+mikeqq2024 on June 13, 2024 | root | parent | next [–]
+
+Does the efficiency come from the raft implementation of distributed transactions or something else?
+
+	
+sewen on June 13, 2024 | root | parent | next [–]
+
+Both systems pick different trade-offs:
+Flink doesn't persist intermediate state synchronously at all. It runs asynchronous global snapshots in the background, which avoid capturing in-flight messages, just store state, aligned through epoch markers (a synchronization step). On a failure, typically seconds of work need to be redone. That's fine, because it is for analytics, and that approach results in good throughput.
+
+Restate won't start step 2 of a sequence before step 1's result is durable, so it needs to make sure that this durability is achieved quickly. It does frequent (batched) log appends, and each partition does that by itself without synchronizing with others. The result is faster (latency) because it is more fine grained and has less coordination, but it is also more work that is done.
+
+
+	
+pavel_pt on June 12, 2024 | parent | prev | next [–]
+
+I hope @sewen will expand on this but from the blog post he wrote to announce Restate to the world back in August '23:
+> Stateful Functions (in Apache Flink): Our thoughts started a while back, and our early experiments created StateFun. These thoughts and ideas then grew to be much much more now, resulting in Restate. Of course, you can still recognize some of the StateFun roots in Restate.
+
+The full post is at: https://restate.dev/blog/why-we-built-restate/
+
+
+	
+sewen on June 12, 2024 | prev | next [–]
+
+A few links worth sharing here:
+- Blog post with an overview of Restate 1.0: https://restate.dev/blog/announcing-restate-1.0-restate-clou...
+
+- Restate docs: https://docs.restate.dev/
+
+- Discord, for anyone who wants to chat interactively: https://discord.com/invite/skW3AZ6uGd
+
+
+	
+yaj54 on June 12, 2024 | prev | next [–]
+
+how do tools like this handle evolving workflows? e.g., if I have a "durable worklflow" that sleeps for a month and then performs its next actions, what do I do if I need to change the workflow during that month? I really like the concept but this seems like an issue for anything except fairly short workflows. If I keep my data and algorithms separate I can modify my event handling code while workflows are "active."
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+I wrote two blog posts on this! It's a really hard problem
+https://restate.dev/blog/solving-durable-executions-immutabi...
+
+https://restate.dev/blog/code-that-sleeps-for-a-month/
+
+The key takeaways:
+
+1. Immutable code platforms (like Lambda) make things much more tractable - old code being executable for 'as long as your handlers run' is the property you need. This can also be achieved in Kubernetes with some clever controllers
+
+2. The ability to make delayed RPCs and span time that way allows you to make your handlers very short running, but take action over very long periods. This is much superior to just sleeping over and over in a loop - instead, you do delayed tail calls.
+
+
+	
+delusional on June 12, 2024 | root | parent | next [–]
+
+> Immutable code platforms (like Lambda) make things much more tractable
+My job is admittedly very old-school, but is that actually doable? I dont think my stakeholders would accept a version of "well we can't fix this bug for our current customers, but the new ones wont have it". That just seems like a chaos nobody wants to deal with.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+I don't personally believe this immutability property should be used for handlers that run for more than say 5 minutes. Any longer than that, I'd suggest the use of delayed calls, which explicitly will serialise the handler arguments instead of saving the whole journal. I agree executing code that is even just an hour old is unacceptable in almost all cases.
+Obviously you can still sleep for a month, but I really see no way to make such a handler safely updatable without editing the code to branch on versions, which can become a mess really quick (but good for getting out of a jam!)
+
+
+	
+yaj54 on June 12, 2024 | root | parent | prev | next [–]
+
+ah! this took me a second to grok, but from #2 above: "we just want to send the email service a request that we want to be processed in a month. The thing that hangs around ‘in-flight’ wouldn’t be a journal of a partially-completed workflow, with potentially many steps, but instead a single request message."
+I'll have to think through how much that solves, but it's a new insight for me - thanks!
+
+I like that you're working on this. seems tricky, but figuring out how to clearly write workflows using this pattern could tame a lot of complexity.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+It's always been a lively topic within Restate. The conversation goes a bit like this
+> Let users write code how they want, its our job to make it work!
+
+> Yes, but it's simply not safe to do this!
+
+I think we need to offer our users a lot of stuff to get it right:
+
+1. Tools so they know when a deploy puts in-flight invocations at risk, or maybe even in their editor, showing what invocations exist at each line of a handler
+
+2. Nudge towards delayed call patterns whereever we can
+
+3. Escape hatches if they absolutely have to change a long-running handler - ways to branch their code on the running version, clever cancellation tricks, 'restart as a new call' operation
+
+Sadly no silver bullet. Delayed calls get you a lot of the way though :p
+
+
+	
+rockostrich on June 12, 2024 | parent | prev | next [–]
+
+My org solved this problem for our use case (handling travel booking) by versioning workflow runs. Most of our runs are very shortlived but there are cases where we have a run that lasts for days because of some long running polling process e.g. waiting on a human to perform some kind of action.
+If we deploy a new version of the workflow, we just keep around the existing deployed version until all of its in-flight runs are completed. Usually this can be done within a few minutes but sometimes we need to wait days.
+
+We don't actually tie service releases 1:1 with the workflow versions just in case we need a hotfix for a given workflow version, but the general pattern has worked very well for our use cases.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Yeah, this is pretty much exactly how we propose its done (restate services are inherently versioned, you can register new code as a new version and old invocations will go to the old version).
+The only caveat being that we generally recommend that you keep it to just a few minutes, and use delayed calls and our state primitives to have effects that span longer than that. Eg, to poll repeatedly a handler can delayed-call itself over and over, and to wait for a human, we have awakeables (https://docs.restate.dev/develop/ts/awakeables/)
+
+More discussion: https://restate.dev/blog/code-that-sleeps-for-a-month/
+
+
+	
+delusional on June 12, 2024 | parent | prev | next [–]
+
+Conceptually I think the only thing these tools add on to the mental model of separation of data and logic is that they also store the name of next routine to call. The name is late bond, so migration would amount to switching out the implementation of that procedure.
+
+	
+pavel_pt on June 12, 2024 | root | parent | next [–]
+
+Restate also stores a deployment version along with other invocation metadata. FaaS platforms like AWS Lambda make it very easy to retain old versions of your code, and Restate will complete a started invocation with the handlers that it started with. This way, you can "drain" older executions while new incoming requests are routed to the latest version.
+You still have to ensure that all versions of handler code that may potentially be activated are fully compatible with all persisted state they may be expected to access, but that's not much different from handling rolling deployments in a large system.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | prev | next [–]
+
+not necessarily - we store the intermediary states of your handler, so it can be replayed on infrastructure failures. if the handler changes in what it does, those intermediary states (the 'journal') might no longer match this. the best solution is to route replayed requests to the version of the code that originally executed the request, but: 1. many infra platforms dont allow you to execute previous versions 2. after some duration (maybe just minutes), executing old code is dangerous, eg because of insecure dependencies.
+
+	
+delusional on June 12, 2024 | root | parent | next [–]
+
+I was of course just thinking about the "front" of the execution, when you're sleeping for 2 days and you want to switch out a future step. Switching out logic that has already been committed is a harder problem. That's a goo point.
+> after some duration (maybe just minutes), executing old code is dangerous, eg because of insecure dependencies.
+
+Could you elaborate on that? My understanding is that all of this tech builds on actions being retried in an "eventually consistent" manner. That would seem to clash with this argument.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+> Could you elaborate on that?
+What I mean is that executing a software artifact from, lets say, a month ago, just to get month-old business logic, is extremely dangerous because of non-business-logic elements. Maybe it uses the old DB connection string, or a library with a CVE. Its a 'hack' to address old code versions in order to get the business logic that a request originally executed on - a hack that I feel should be used for minutes, not eve hours.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | prev | next [–]
+
+> I was of course just thinking about the "front" of the execution, when you're sleeping for 2 days and you want to switch out a future step. Switching out logic that has already been committed is a harder problem. That's a goo point.
+You make a good point - this is the idea behind 'delayed calls' which are really one of my favourite things about Restate. Don't save all the intermediary state - just serialise the service name, the handler name, and the arguments, and store that for a month or whatever. That is a very tractable problem - ie just request object versioning
+
+
+	
+senorrib on June 13, 2024 | prev | next [–]
+
+Looks very interesting, but calling it Open Source is misleading. BSL is not "minimal Amazon defense". It effectively prevents any meaningful dynamic functionality to be built on top of it without a commercial subscription.
+
+	
+stsffap on June 13, 2024 | parent | next [–]
+
+We tried to design the additional usage grant (https://github.com/restatedev/restate/blob/39f34753be0e27af8...) as permissive as possible. Our intention is to only prevent the big cloud service providers from offering Restate as a managed service as it has happened in the past with other open source projects. If you find the additional usage grant still too restrictive, then let us talk how to adjust it to enable you while still maintaining our initial intention.
+
+	
+senorrib on June 15, 2024 | root | parent | next [–]
+
+Our use case is to allow users to customize workflows based on a few building blocks. Think of an ERP that would allow users to add or remove steps or different paths to their payroll workflow, for example.
+The wording in the additional grant labels software like this as an Application Platform Service -- which is fair, and perhaps intended, but we're still not a big cloud service provider.
+
+
+	
+hintymad on June 12, 2024 | prev | next [–]
+
+I'm not sure "In Rust" serve any marketing value. A product's success rarely has to do with the use of a programming language, if not at all. I understand the arguments made by Paul Graham on the effectiveness of programming languages, but specifically for a workflow manager, a user like me cares literally zero about which programming language the workflow system uses even if I have to hack into the internal of the system, and latency really matters a lot less than throughput.
+
+	
+tempaccount420 on June 13, 2024 | parent | next [–]
+
+You are free to ignore it. Personally I like to see new projects be made in Rust, because it means they're easier to contribute to than projects in other unmanaged non-GC languages.
+
+	
+threeseed on June 12, 2024 | parent | prev | next [–]
+
+Having spent a lot of time recently writing Rust it's a major negative for me.
+It's a terrible language for concurrency and transitive dependencies can cause panics which you often can't recover from.
+
+Which means the entire ecosystem is like sitting on old dynamite waiting to explode.
+
+JVM really has proven itself to be by far the best choice for high-concurrency, back-end applications.
+
+
+	
+swyx on June 12, 2024 | parent | prev | next [–]
+
+it does if it makes Hners click upvote...
+
+	
+bilalq on June 12, 2024 | prev | next [–]
+
+Could you share details on limits to be mindful of when designing workflows? Some things I'd love to be able to reference at a glance:
+1. Max execution duration of a workflow
+
+2. Max input/output payload size in bytes for a service invocation
+
+3. Max timeout for a service invocation
+
+4. Max number of allowed state transitions in a workflow
+
+5. Max Journal history retention time
+
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+1. There is no maximum execution duration for a Restate workflow. Workflows can run only for a few seconds or span months with Restate. One thing to keep in mind for long-running workflows is that you might have to evolve the code over its lifetime. That's why we recommend writing them as a sequence of delayed tail calls (https://news.ycombinator.com/item?id=40659687)
+2. Restate currently does not impose a strict size limit for input/output messages by default (it has the option to limit it though to protect the system). Nevertheless, it is recommended to not go overboard with the input/output sizes because Restate needs to send the input messages to the service endpoint in order to invoke it. Thus, the larger the input/output sizes, the longer it takes to invoke a service handler and sending the result back to the user (increasing latency). Right now we do issue a soft warning whenever a message becomes larger than 10 MB.
+
+3. If the user does not specify a timeout for its call to Restate, then the system won't time it out. Of course, for long-running invocations it can happen that the external client fails or its connection gets interrupted. In this case, Restate allows to re-attach to an ongoing invocation or to retrieve its result if it completed in the meantime.
+
+4. There is no limit on the max number of state transitions of a workflow in Restate.
+
+5. Restate keeps the journal history around for as long as the invocation/workflow is ongoing. Once the workflow completes, we will drop the journal but keep the completed result for 24 hours.
+
+
+	
+sewen on June 12, 2024 | parent | prev | next [–]
+
+For a many of those values, the answer would be "as much as you like", but with awareness for tradeoffs.
+You can store a lot of data in Restate (workflow events, steps). Logged events move quickly to an embedded RocksDB, which is very scalable per node. The architecture is partitioned, and while we have not finished all the multi-node features yet, everything internally is build in a partitioned scalable manner.
+
+So it is less a question of what the system can do, maybe more what you want:
+
+- if you keep tens of thousands of journal entries, replays might take a bit of time. (Side note, you also don't need that, Restate's support for explicit state gives you an intuitive alternative to the "forever running infinite journal" workflow pattern some other systems promote.)
+
+- Execution duration for a workflow is not limited by default. More of a question of how long do you want to keep instances older versions of the business logic around?
+
+- History retention (we do this only for tasks of the "workflow" type right now) as much as you are willing to invest into for storage. RocksDB is decent at letting old data flow down the LSM tree and not get in the way.
+
+Coming up with the best possible defaults would be something we'd appreciate some feedback on, so would love to chat more on Discord: https://discord.gg/skW3AZ6uGd
+
+The only one where I think we need (and have) a hard limit is the message size, because this can adversely affect system stability, if you have many handlers with very large messages active. This would eventually need a feature like out-of-band transport for large messages (e.g., through S3).
+
+
+	
+bilalq on June 12, 2024 | prev | next [–]
+
+I still haven't gotten around to adopting Restate yet, but it's on the radar. One thing that Step Functions probably has over Restate is the diagram visualization of your state machine definition and execution history. It's been really neat to be able to zero in on a root cause at the conceptual level instead of the implementation level.
+One big hangup for me is that there's only a single node orchestrator as a CDK construct. Having a HA setup would be a must for business critical flows.
+
+I stumbled on Restate a few months ago and left the following message on their discord.
+
+> I was considering writing a framework that would let you author AWS Step Functions workflows as code in a typesafe way when I stumbled on Restate. This looks really interesting and the blog posts show that the team really understands the problem space.
+
+> My own background in this domain was as an early user of AWS SWF internally at AWS many, many years ago. We were incredibly frustrated by the AWS Flow framework built on top of SWF, so I ended up creating a meta Java framework that let you express workflows as code with true type-safety, arrow function based step delegations, and leveraging Either/Maybe/Promise and other monads for expressiveness. The DX was leaps and bounds better than anything else out at the time. This was back around 2015, I think.
+
+> Fast-forward to today, I'm now running a startup that uses AWS Step Functions. It has some benefits, the most notable being that it's fully serverless. However, the lack of type-safety is incredibly frustrating. An innocent looking change can easily result in States.Runtime errors that cannot be caught and ignore all your catch-error logic. Then, of course, is how ridiculous it feels to write logic in JSON or a JSON-builder using CDK. As if that wasn't bad enough, the pricing is also quite steep. $25 for every million state transitions feels like a lot when you need to create so many extra state transitions for common patterns like sagas, choice branches, etc.
+
+> I'm looking forward to seeing how Restate matures!
+
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+A visualisation/dashboard is a top priority! Distributed architecture (to support multiple nodes for HA and horizontal scaling) is being actively worked on and will land in the coming months
+
+	
+bilalq on June 12, 2024 | root | parent | next [–]
+
+That's exciting!
+Out of curiosity, have you explored the possibility of a serverless orchestration layer? That's one of the most appealing parts of Step Functions. We have many large workflows that run just a couple times a day and take several hours alongside a few short workflows that run under a minute and are executed more frequently during peak hours. Step Functions ends up being really cost effective even through many state transitions because most of the time, the orchestrator is idle.
+
+Coming from an existing setup where everything is serverless, the fixed cost to add serverfull stuff feels like a lot. For a HA setup, it'd be 3 EC2 instances and 3 NAT gateways spread across 3 AZs. Then multiply that for each environment and dev account, and it ends up being pretty steep. You can cut costs a bit by going single AZ for non-prod envs, but still...
+
+I couldn't find a pricing model for Restate Cloud, but I'm including "managed services" under the definition of serverless for my purposes. Maybe that offering can fill the gap, but then it does raise security concerns if the orchestration is not happening on our own infra.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Yeah, definitely. We would like to have modes of operation where Restate puts its state only in S3. In that world, it could potentially run for short periods, and sleep when there's no work to do.
+Cloud only has an early access free tier right now. We intend to make Cloud into a highly multitenant offering, which will make the cost of a user that isn't doing anything with their cluster effectively 0. In that world, we can do really cost effective consumption pricing for low-volume serverless use cases. Absolutely this requires trust, and some users will always want to self host, and we want to make that as easy and cost effective as possible. Its worth noting that we should be able to support client side encryption for journal entries, in time - in which case, you don't have to trust us nearly as much.
+
+
+	
+aleksiy123 on June 12, 2024 | prev | next [–]
+
+Looks really awesome. Always been looking for some easy to use async workflows + cronjobs service to use with serverless like Vercel.
+Also something about this area always makes me excited. I guess it must be the thought of having all these tasks just working in the background without having to explicitly manage them.
+
+One question I have is does anyone have experience for building data pipelines in this type of architecture?
+
+Does it make sense to fan out on lots of small tasks? Or is it better to batch things into bigger tasks to reduce the overhead.
+
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+While Restate is not optimized for analytical workloads it should be fast enough to also use it for simpler analytical workloads. Admittedly, it currently lacks a fluent API to express a dataflow graph but this is something that can be added on top of the existing APIs. As @gvdongen mentioned a scatter-gather like pattern can be easily expressed with Restate.
+Regarding whether to parallelize or to batch, I think this strongly depends on what the actual operation involves. If it involves some CPU-intensive work like model inference, for example, then running more parallel tasks will probably speed things up.
+
+
+	
+gvdongen on June 12, 2024 | parent | prev | next [–]
+
+Here is a fan-out example for async tasks: https://docs.restate.dev/use-cases/async-tasks#parallelizing... First, a number of tasks are scheduled, and then their results are collected (fan-in). This probably comes closest to what you are looking for. Each of those tasks gets executed durably, and their execution tracked by Restate.
+
+	
+netvarun on June 12, 2024 | prev | next [–]
+
+Feedback: everybody’s question is going to be on why this over temporal? I’ve noticed you answered a little bit of that below. My advice would be to write a detailed blog post maybe on how both the systems compare from installation to use cases and administration, etc - I’ve been following your blog and while I think y’all are doing interesting stuff I still haven’t wrapped my head around how exactly is restate different from temporal which is a lot more funded, has almost every unicorn using them and are fully permissively licensed.
+
+	
+sewen on June 12, 2024 | parent | next [–]
+
+That blog post should exist, agree. Here is an attempt at a short answer (with the caveat that I am not an expert in Temporal).
+(1) Restate has latencies that to the best of my knowledge are not achievable with Temporal. Restate's latencies are low because of (a) its event-log architecture and (b) the fact that Restate doesn't need to spawn tasks for activities, but calls RPC handlers.
+
+(2) Restate works really well with FaaS. FaaS needs essentially a "push event" model, which is exactly what Restate does (push event, call handler). IIRC, Temporal has a worker model that pulls tasks, and a pull model is not great for FaaS. Restate + AWS Lambda is actually an amazing task queue that you can submit to super fast and that scales out its workers virtually infinitely automatically (Lambda).
+
+(3) Restate is a self-contained single binary that you download and start and you are done. I think that is a vastly different experience from most systems out there, not just Temporal. Why do app developers love Redis so much, despite its debatable durability? I think it is the insanely lightweight manner they love, and this is what we want to replicate (with proper durability, though).
+
+(4) Maybe most importantly, Restate does much more than workflows. You can use it for just workflows, but you can also implement services that communicate durably (exactly-one RPC), maintain state in an actor-style manner (via virtual objects), or ingest events from Kafka.
+
+This is maybe not the first thing you build, but it shows you how far you can take this if you want: It is a full app with many services, workflows, digital twins, some connect to Kafka. https://github.com/restatedev/examples/tree/main/end-to-end-...
+
+All execution and communication is async, durable, reliable. I think that kind of app would be very hard to build with Temporal, and if you build it, you'd probably be using some really weird quirks around signals, for example when building the state maintenance of the digital twin that don't make this something any other app developer would find really intuitive.
+
+
+	
+netvarun on June 12, 2024 | root | parent | next [–]
+
+Thanks for the detailed answer - please turn it into a blog post! Excited to see competition and different architectural approaches to tackle durable execution. Wishing you all the very best!
+
+	
+mikelnrd on June 12, 2024 | prev | next [–]
+
+Hi. I'm excited to try this out. Does the typescript library for writing restate services run in Deno? And how about in a Cloudflare worker? These aren't quite nodejs environments but they do both offer comparability layers that make most nodejs libraries work. Just wondering if you know if the SDK will run in those runtimes? Thanks
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+Hey! I managed to get a POC running on Cloudflare workers, I had to make some small changes to the SDK eg to remove the http2 import, convert the Cloudflare request type into the Lambda request type, and add some methods to the Buffer type. I suspect similar things would be needed on Deno platforms. We have it on our todo list (scheduled within weeks not months) to make it possible to import a version of the library that just works out of the box on these platforms. I think if we had someone with a use case asking for it, we would happily build that even sooner - maybe come chat in our discord? https://discord.gg/skW3AZ6uGd
+Once http2 stuff is removed, there's nothing particularly odd that our library does that shouldn't work in all platforms, but I'm sure there will be some papercuts until we are actively testing against these targets
+
+
+	
+tonyhb on June 12, 2024 | parent | prev | next [–]
+
+Disclaimer: I work for Inngest (https://www.inngest.com), which works in the same area and released 2 years ago.
+The restate API is extremely similar to ours, and because of the similarities both Restate and Inngest should work on Bun, Deno, or any runtime/cloud. We most definitely do, and have users in production on all TS runtimes in every cloud (GCP, Azure, AWS, Vercel, Netlify, Fly, Render, Railway, Cloudflare, etc).
+
+
+	
+hamandcheese on June 12, 2024 | prev | next [–]
+
+Is this a competitor to Temporal? I admit that I have never used either, but it strikes me as odd that these things bring their own data layer. Is the workload not possible using a general purpose [R]DBMS?
+
+	
+pavel_pt on June 12, 2024 | parent | next [–]
+
+Disclaimer: I work on Restate together with @p10jkle.
+You can absolutely do something similar with a RDBMS.
+
+I tend to think of building services in state machines: every important step is tracked somewhere safe, and causes a state transition through the state machine. If doing this by hand, you would reach out to a DBMS and explicitly checkpoint your state whenever something important happens.
+
+To achieve idempotency, you'd end up peppering your code with prepare-commit type steps where you first read the stored state and decide, at each logical step, whether you're resuming a prior partial execution or starting fresh. This gets old very quickly and so most code ends up relying on maybe a single idempotency check at the start, and caller retries. You would also need an external task queue or a sweeper of some sort to pick up and redrive partially-completed executions.
+
+The beauty of a complete purpose-built system like Restate is that it gives you a durable journal service that's designed for the task of tracking executions, and also provides you with an SDK that makes it very easy to achieve the "chain of idempotent blocks" effect without hand-rolling a giant state machine yourself.
+
+You don't have to use Restate to persist data, though you can - and you get the benefit of having the state changes automatically commit with the same isolation properties as part of the journaling process. But you could easily orchestrate writes into external stores such as RDBMS, K-V, queues with the same guaranteed-progress semantics as the rest of your Restate service. Its execution semantics make this easier and more pleasant as you get retries out of the box.
+
+Finally, it's worth mentioning that we expose a PostgreSQL protocol-compatible SQL query endpoint. This allows you to query any state you do choose to store in Restate alongside service metadata, i.e. reflect on active invocations.
+
+
+	
+sewen on June 12, 2024 | parent | prev | next [–]
+
+That's definitely a good question. A few thoughts here (I am one of the authors). The "bring your own data layer" has several goals:
+(1) it is really helpful in getting good latencies.
+
+(2) it makes it self-contained, so easy to start and run anywhere
+
+(3) There is a simplicity in the deeply integrated architecture, where consensus of the log, fencing of the state machine leaders, etc. goes hand in hand. It removes the need to coordinate between different components with different paradigms (pub-sub-logs, SQL databases, etc) that each have their own consistency/transactions. And coordination avoidance is probably the best one can do in distributed systems. This ultimately leads also to an easier to understand behavior when running/operating the system.
+
+(4) The storage is actually pluggable, because the internal architecture uses virtual consensus. So if the biggest ask from users would be "let me use Kafka or SQS FIFO" then that's doable.
+
+We'd love to go about this the following way: We aim to provide an experience than is users would end up preferring to maintaining multiple clusters of storage systems (like Cassandra + ElasticSearch + X server and Y queues) though this integrated design. If that turns out to not be what anyone wants, we can still relatively easily work with other systems.
+
+
+	
+AhmedSoliman on June 12, 2024 | parent | prev | next [–]
+
+Nothing prevents you from using your own data layer, but part of the power of Restate is the tight control over the short-term state and the durable execution flow. This means that you don't need to think a lot about concurrency control, dirty reads, etc.
+
+	
+azmy on June 12, 2024 | prev | next [–]
+
+I have been following on this project on a while and i tried it on older version and was already amazing. I am so excited to try this version out! specially with the cloud offering
+
+	
+magnio on June 12, 2024 | prev | next [–]
+
+How does Restate compare with Apache Airflow or Prefect?
+
+	
+sewen on June 12, 2024 | parent | next [–]
+
+Disclaimer, I am not an Airflow expert and even less of a Prefect expert.
+One difference is that Airflow seems geared towards heavier operations, like in data pipelines. In contrast, would be that Restate is not by default spawning any tasks, but it acts more of a proxy/broker for RPC- or event handlers and adds durable retries, journaling, ability to make durable RPCs, etc.
+
+That makes it quite lightweight: If the handlers is fast in a running container, the whole thing results in super fast turnaround times (milliseconds).
+
+You can also deploy the handlers on FaaS and basically get the equivalent of spawning a (serverless task) per step.
+
+The other difference would be the way that the logic is defined, can maintain state, can make exactly-once calls to other handlers.
+
+
+	
+akbirkhan on June 12, 2024 | prev | next [–]
+
+Nice! Excited tools that makes using microservices easier.
+Question tho, when will you guys have python support? I’m a ml researcher here and can you tell that most of my work is now pipelines between different services, e.g. Chaining multiple LLM services. Big bottleneck is if one service returns an error and crashes the full chain.
+
+Big fan of this work nevertheless. Just think you have alpha on the table
+
+
+	
+pavel_pt on June 12, 2024 | parent | next [–]
+
+We don't have specific plans for our next SDK to build, but Python definitely comes up often - thank you for the input!
+
+	
+p10jkle on June 12, 2024 | parent | prev | next [–]
+
+Probably one of our two most requested languages. We absolutely are going to do it, probably in the next 6-12 months :)
+
+	
+p10jkle on June 12, 2024 | prev | next [–]
+
+Hey all, I work with @sewen, and I focus on the cloud platform which also launched today (https://restate.dev/blog/announcing-restate-cloud-early-acce...) Happy to answer any questions :)
+
+	
+jamifsud on June 12, 2024 | prev | next [–]
+
+Any plans for a Python SDK? We’re actively looking for a platform like this but our stack is TS / Python!
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+We are actively looking for feedback on what SDK to develop next. Quite a few people have voiced interest in Python so far. This will make it more likely that we might tackle this soonish. We'll keep you posted.
+
+	
+mikeqq2024 on June 13, 2024 | root | parent | next [–]
+
+Python SDK +1
+
+	
+rubyfan on June 12, 2024 | prev | next [–]
+
+There’s a lot of jargon in this, is there a lay person explanation of what problem this solves?
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+Our goal is to make it easier to write code that handles failures - failed outbound api calls, infrastructure issues like a host dying, problems talking between services. The primitive we offer is that we guarantee that your handlers always run to completion (whether to a result or a terminal error)
+The way we do that is by writing down what your code is doing, while its doing it, to a store. Then, on any failure, we re-execute your code, fill in any previously stored results, so that it can 'zoom' back to the point where it failed, and continue. It's like a much more efficient and intelligent retry, where the code doesn't have to be idempotent.
+
+
+	
+delusional on June 12, 2024 | root | parent | next [–]
+
+> where the code doesn't have to be idempotent
+Is that true? I don't think that makes any theoretical sense, since I'm pretty sure the whole thing relies on transparent retries for external calls.
+
+If I complete some action that can't be retried and then die before writing it to the log (completing an action unatomically) there would seem to be no way for this to recover without idempotency.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Absolutely, individual atomic side effects need to be idempotent. We can't solve the fundamental distributed system problem there (eg an HTTP 500 - did it actually get executed) However, the string of operations doesn't need to be idempotent - lets say your handler does 3 tasks A B C, and the machine dies at C. Only C will be re-executed. A and B need to be atomically idempotent, but once we move on, we don't start again
+Critical point - its much easier to think about and test for the re-execution of C in a vacuum, than to test for A B C all re-executing in sequence, with a variable number of those having already executed before
+
+
+	
+johtso on June 12, 2024 | root | parent | prev | next [–]
+
+Doesn't anything involving requests to other services inherently have to be idempotent because there's still a chance of a communication error resulting in an unknown outcome of the action? You don't know if the "widget order" was successfully placed or not, and therefore there's no way to know if that action can safely be tried again.
+
+	
+sewen on June 12, 2024 | root | parent | next [–]
+
+That is true, individual steps should be idempotent or undo-able.
+But really only each individual one needs to be idempotent, rather than the full sequence, and that makes many situations much easier.
+
+For example, you create a new permissions role and assign it to the user (two steps). If you safely memoize the result from the first step (let's say role uid) then any retries just assign the same role to the user again (which would not make a difference). Without memoizing the step, you might retry the whole process, assign two roles, or create a lot of code to try and figure out what was created before and reconnect the pieces.
+
+You can also use this to memoize generated ids, dry-run-before change, ensure undos run to completion (sagas style), even implement 2PC patterns if you want to.
+
+
+	
+p10jkle on June 12, 2024 | root | parent | prev | next [–]
+
+https://news.ycombinator.com/item?id=40659968 Absolutely, sorry if im not tight enough with my language. Maybe should be described as 'operation idempotency' vs 'handler idempotency'. IMO, an entire handler re-executing is much harder to reason about and test for than a particular operation re-executing individually, with nothing else changing between executions
+
+	
+stsffap on June 12, 2024 | root | parent | next [–]
+
+A special case is if the operation is calling another Restate service. In this case, Restate will make sure that the callee will be executed exactly once and there is no need for the user to pass an idempotency key or something similar. Only when interacting with the external world from a Restate service, the operation needs to be idempotent.
+
+	
+fire_lake on June 12, 2024 | root | parent | prev | next [–]
+
+This assumes that the APIs work this way?
+What if the first call is to get a resource that expires and then the last call fails?
+
+Now it will retry but with an expired resource (first call is saved).
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+I think you would need to validate the response from the first call before determining it to be a success?
+
+	
+fire_lake on June 12, 2024 | root | parent | next [–]
+
+First call: fetch a widget
+Success! Your widget expires in 30 seconds
+
+Second call: use widget
+
+Failure! For some reason or another
+
+Ok, so restart the flow…
+
+First call: fetch a widget
+
+Cached! Receive the same widget again
+
+Second call: use widget
+
+Failure! widget has now expired
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Ah I see what you mean. In this case the handler should complete with a terminal error - we weren't able to finish the task in time. Of course, many types of errors and timeouts are valid application-level results, not transient infrastructure issues. And sadly, tight timeouts push transient issues into application-level issues, and this is unavoidable, I think
+
+	
+rubyfan on June 12, 2024 | root | parent | prev | next [–]
+
+So non-response time bound workloads that need to reliably dispatch other processes to completion?
+Would a good example be something like, automated highway toll collecting? i.e. I drive past a scanner on the highway, my license plate is scanned and several state bound collection events need to be triggered until the toll is ultimately collected?
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Yes, definitely, but we can also cover response time bound tasks! Not just async. Typical p90 of a 3-step workflow is 50ms. Our goal is to run on every RPC, anywhere you need reliability
+
+	
+corytheboyd on June 12, 2024 | root | parent | prev | next [–]
+
+What if the code was changed by the time it is retried? I imagine it would have to throw away its memorized instructions, and because the code isn’t idempotent…
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+Great question! https://news.ycombinator.com/item?id=40659687
+
+	
+mnahkies on June 12, 2024 | prev | next [–]
+
+Do you have anything comparing and contrasting with temporal?
+I'm particularly interested in the scaling characteristics, and how your approach to durable storage (seems no external database is required?) differs
+
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+We will create a more detailed comparison to Temporal shortly. Until then @sewen gave a nice summarizing comparison here: https://news.ycombinator.com/item?id=40660568.
+And yes, Restate does not have any external dependencies. It comes as a single self-contained binary that you can easily deploy and operate wherever you are used to run your code.
+
+
+	
+mnahkies on June 13, 2024 | root | parent | next [–]
+
+Nice thanks. The ability to use cloud functions/lambdas is certainly intriguing and something I'd hoped would be possible with temporal when I first discovered it.
+In a multi-replica / horizontally scaled setup:
+
+- Does each replica get its own independent storage volume?
+
+- How much state is replicated between each volume if so?
+
+- What does a typical workloads journal look like in terms of storage size? How often does this get compacted / is there archival to cold storage?
+
+- How do you manage upgrades to restate in the case of a change to the on-disk format? (Or is this designed to be static between releases)
+
+The fact that it's without external dependencies also makes me wonder if it would be encouraged to have multiple independent deployments of restate managing different independent services/workflows to avoid noisy neighbors and single points of failure - seems like it might be lightweight enough that this is practical?
+
+
+	
+sharkdoodoo on June 12, 2024 | prev | next [–]
+
+I understand the need for writing this as an SDK over existing languages for adoption reasons, but in your opinion would a programming language purposely built for such a paradigm make more sense?
+
+	
+slinkydeveloper on June 12, 2024 | parent | next [–]
+
+(Disclaimer: I work at Restate on SDKs) This is a very interesting point. I did some investigation myself, and so far I'm torn apart on whether a novel language would really make such a big difference for durable execution engines like Restate.
+Let me elaborate it: first of all, what would be the killer feature that justifies creating a whole new PL for durable execution? From what I can tell, the thing that IMO can really make a difference would be the ability to completely hide durable execution from the user, by being able to take snapshots of the execution at any point in time and then record those in the engine transparently. Now let's say such language exists, and it can also take those snapshots reasonably fast, it is still quite a problem to establish where it's logically safe to take a snapshot, and when the execution cannot continue because you need to wait acknowledgment for stored results. Say for example you have the following code:
+
+val resultA = callA() val resultB = callB(resultA)
+
+Both A and B do some non-deterministic operation, e.g. they perform HTTP calls to some other systems. Now let's say that when callB() completed, but before you got the HTTP response, your code for whatever reason crashes. If you didn't took any snapshot between callA() and callB(), you will completely lose forever the fact that B was invoked with resultA, and the next time you re-execute A, it might generate a result that is different from the one that was generated the first time. Due to this problem, you would still need to somehow manually define some "safepoints" where it's safe to take those snapshots. Meaning that we can't really hide the durable execution from the user, as you would still need some statement like "snapshot_here" to tell the engine where it's safe to snapshot or not.
+
+In our SDKs we effectively implement that, by taking the safe approach of always waiting for storage acknowledgement when you execute two consecutive ctx.run().
+
+But happy to be proven wrong!
+
+
+	
+sharkdoodoo on June 12, 2024 | root | parent | next [–]
+
+Oh wow, thanks for the depth in your reply. well I don't know anything about programming languages but something just made me ask this question out of curiosity. I may have to play around with restate a bit
+
+	
+p10jkle on June 12, 2024 | parent | prev | next [–]
+
+Super interesting question! If we were inventing modern tech from scratch, I think there's space for this, definitely. Our goal though is that people can use their primitives in the systems they have already, which means Java, Go, Python, TS support are all table stakes
+
+	
+whoiskatrin on June 12, 2024 | prev | next [–]
+
+The cloud setup was super fast! I used it for an existing app + restate TS sdk, really took a few steps to get things up and running! Looking forward to more support for nextjs/node
+
+	
+pavel_pt on June 12, 2024 | parent | next [–]
+
+Appreciate the feedback! What kind of support do you wish for, if there was one thing you would prioritize?
+
+	
+whoiskatrin on June 12, 2024 | root | parent | next [–]
+
+Pull handlers would make integration much easier, I think
+
+	
+AhmedSoliman on June 12, 2024 | root | parent | next [–]
+
+Agreed.
+
+	
+dovys on June 12, 2024 | prev | next [–]
+
+Handling durability for RPCs is a neat idea. Can you do chained rollbacks? ie an rpc down the call stack fails to revert the whole stack instead of retrying?
+
+	
+gvdongen on June 12, 2024 | parent | next [–]
+
+Here is another example in the examples repo which does compensation. There is also a Java one https://github.com/restatedev/examples/blob/main/basics/basi...
+
+	
+p10jkle on June 12, 2024 | parent | prev | next [–]
+
+we talk a bit about compensations in the post: https://restate.dev/blog/graceful-cancellations-how-to-keep-... the gist is that you can just use catch statements and put rollback logic in it. Restate guarantees that handlers run to the end, so there's no risk that it somehow won't reach the catch statement due to an infra failure. So catch, rethrow, and then all the way up the stack, the compensations will run
+
+	
+AhmedSoliman on June 12, 2024 | prev | next [–]
+
+"Virtual Objects" is a cool concept, the name might not reflect the power it brings though. Luckily, the documentation seems to explain it well.
+
+	
+jiehong on June 12, 2024 | prev | next [–]
+
+This seems interesting!
+I couldn’t find an equivalent of the codec server in temporal that basically encrypts all data in the event log. Is there something similar?
+
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+Currently, Restate does not support this functionality out of the box. Since Restate does not need access to input/output messages or state (it ships it as bytes to the service endpoint), you could add your own client-side encryption mechanism. In the foreseeable future, Restate will probably add a more integrated solution for it.
+
+	
+p10jkle on June 12, 2024 | parent | prev | next [–]
+
+We haven’t built any client side encryption tools yet. I don’t think it would be particularly difficult to do an MVP. If it’s very important to your use case, come chat to us in Discord? https://discord.com/invite/skW3AZ6uGd
+
+	
+ko_pivot on June 12, 2024 | prev | next [–]
+
+Being fairly familiar with Temporal, I definitely appreciate your cleaner architectural choices. Add a Go SDK and I’ll definitely give this a try.
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+Someone already contributed an MVP; in the next few months we'll be adopting it fully and upgrading it to 1.0 (we hired the awesome Azmy after he built it) https://github.com/muhamadazmy/restate-sdk-go
+
+	
+abtinf on June 12, 2024 | root | parent | next [–]
+
+I think this is a point worth highlighting much more prominently in your marketing.
+In my mind, this moved restate from “huh, that’s cool” to “during tomorrow’s standup, I’m going to ask one of my engineers to build a poc.”
+
+
+	
+p10jkle on June 12, 2024 | root | parent | next [–]
+
+It's not on 1.0 yet, and it was written by someone external (who we have hired, but hasn't started yet :D). So I would say Go is still in coming soon mode, unless you want to just do a POC on 0.8.1 (which is fine, someone on the discord is running that in prod anyhow)
+Super excited to hear what you do with it though!
+
+
+	
+caust1c on June 12, 2024 | root | parent | prev | next [–]
+
+When you do consider adopting it fully, I highly recommend trying to make the state handling as transparent as possible to the end consumer. For example, implementing an HTTP Client that wraps a http.RoundTripper versus what that SDK provides.
+Evaluating a selection of these durable workflow SDKs for Go, I'm not keen on being tightly coupled to a vendor and the implementation shouldn't be that crazy to fit into existing Go interfaces.
+
+
+	
+slinkydeveloper on June 12, 2024 | root | parent | next [–]
+
+(Disclaimer, I work for Restate on SDKs) We definitely plan to introduce helpers for the common use cases, for example right now we provide helpers to generate random numbers or uuids. We could definitely provide a wrapped HTTP client that records the HTTP calls you perform and store them in Restate, in particular in Golang this should be easier than in other languages, given the std library provides itself an HTTP client we can wrap/integrate on.
+In general, we aim to make our SDKs as tweakable as possible, such that you could easily overlay your API on top of our SDKs to create your own experience.
+
+
+	
+qwertyuiop_ on June 12, 2024 | prev | next [–]
+
+Looks cool. Just out of curiosity, where did you find the template for your homepage? is there a content framework you are using ?
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+I don't think its a template, I'm afraid! Its a webflow site though
+
+	
+swyx on June 12, 2024 | prev | next [–]
+
+techcrunch announcement here as well https://techcrunch.com/2024/06/12/restate-raises-7m-for-its-...
+
+	
+sharkdoodoo on June 12, 2024 | prev | next [–]
+
+Are there any theoretical underpinnings in the design of restate? Any papers/references. Thanks!
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+Restate is built as a sharded replicated state machine similar to how TiKV (https://tikv.org/), Kudu (https://kudu.apache.org/kudu.pdf) or CockroachDB (https://github.com/cockroachdb/cockroach) are designed. Instead of relying on a specific consensus implementation, we have decided to encapsulate this part into a virtual log (inspired by Delos https://www.usenix.org/system/files/osdi20-balakrishnan.pdf) since it makes it possible to tune the system more easily for different deployment scenarios (on-prem, cloud, cost-effective blob storage). Moreover, it allows for some other cool things like seamlessly moving from one log implementation to another. Apart from that the whole system design has been influenced by ideas from stream processing systems such as Apache Flink (https://flink.apache.org/), log storage systems such as LogDevice (https://logdevice.io/) and others.
+We plan to publish a more detailed follow-up blog post where we explain why we developed a new stateful system, how we implemented it, and what the benefits are. Stay tuned!
+
+
+	
+AhmedSoliman on June 12, 2024 | parent | prev | next [–]
+
+It’s a mixed bag of design ideas. There is definitely inspiration from LogDevice (disclaimer, I am one LogDevice designers) and Delos for (Bifrost, our distributed log design). You can read about Delos in https://www.usenix.org/system/files/osdi20-balakrishnan.pdf
+
+	
+johtso on June 12, 2024 | prev | next [–]
+
+The label "Sign in with your corporate ID" for GitHub sign in seems a little odd..
+
+	
+p10jkle on June 12, 2024 | parent | next [–]
+
+I think its a cognito default - will take a look!
+
+	
+exabrial on June 15, 2024 | prev | next [–]
+
+Looks awesome! Have you ever considered EPL for an Amazon defense?
+
+	
+_1tan on June 12, 2024 | prev [–]
+
+Cool, congrats on launching! Could this replace Jobrunr?
+
+	
+stsffap on June 12, 2024 | parent | next [–]
+
+From a quick glance at what JobRunr does (especially running asynchronous/delayed background tasks), it seems that Restate would be a very good fit for it as well. Restate will also handle persistence for you w/o having to deploy & operate a separate RDBMS or NoSQL store. Note that I am not a JobRunr expert, though.
+
+	
+p10jkle on June 12, 2024 | parent | prev [–]
+
+Thanks! I'm not familiar with Jobrunr, but we can definitely help with orchestrating async tasks (as well as sync rpc calls), especially if its important that they run to completion
+
+
