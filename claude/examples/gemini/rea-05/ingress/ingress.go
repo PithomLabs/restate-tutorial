@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"ingress/models"
+	models "ingress/models"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -148,7 +148,7 @@ func (i *Ingress) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse order from request body
-	var order ingress.Order
+	var order models.Order
 	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -171,7 +171,7 @@ func (i *Ingress) handleStartWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger workflow using ingress client
 	// This sends the order to the OrderFulfillmentWorkflow.Run handler
-	_, err := restateingress.WorkflowSend[ingress.Order](i.client, "OrderFulfillmentWorkflow", order.OrderID, "Run").
+	_, err := restateingress.WorkflowSend[models.Order](i.client, "OrderFulfillmentWorkflow", order.OrderID, "Run").
 		Send(ctx, order)
 
 	if err != nil {

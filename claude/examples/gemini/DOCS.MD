@@ -491,7 +491,7 @@ func (UserSession) Checkout(ctx restate.ObjectContext, orderID string) (bool, er
 1. Create awakeable → Get unique ID
 2. Send ID to external system (payment gateway)
 3. Suspend execution (handler waits)
-4. External system HTTP POSTs result to Restate
+4. External system HTTP POSTs result to Restate via ingress client
 5. Restate resumes handler with result
 
 ---

@@ -1,3 +1,7 @@
+// https://docs.restate.dev/use-cases/microservice-orchestration#comparison-with-other-solutions
+// Restate has built-in UI & execution tracing
+// this package is left as an exercise if you want to integrate observability
+// to third-party SaaS
 package observability
 
 import (
