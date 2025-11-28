@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conway's Game of Life</title>
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            color: #fff;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 1.1em;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+            transform: translateY(-2px);
+        }
+
+        .stats {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            color: white;
+        }
+
+        .stats-label {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .stats-value {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .grid-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        #gameGrid {
+            border: 3px solid #667eea;
+            cursor: crosshair;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .info {
+            background: #e7f3ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 5px;
+            color: #333;
+        }
+
+        .info h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .info ul {
+            margin-left: 20px;
+        }
+
+        .info li {
+            margin: 5px 0;
+            color: #555;
+        }
+
+        .presets {
+            margin-bottom: 20px;
+        }
+
+        .presets h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .preset-btn {
+            padding: 10px;
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            color: #667eea;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+
+        .preset-btn:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .status-running {
+            background: #28a745;
+        }
+
+        .status-paused {
+            background: #ffc107;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container" 
+         data-on-load="@get('/game/default/stream')"
+         data-signals='{
+            "grid": [],
+            "running": false,
+            "generation": 0
+         }'>
+        
+        <h1>🎮 Conway's Game of Life</h1>
+        <p class="subtitle">Click cells to toggle, then watch evolution unfold</p>
+
+        <div class="stats">
+            <div class="stats-label">Generation</div>
+            <div class="stats-value" data-text="$generation"></div>
+        </div>
+
+        <div class="controls">
+            <button 
+                class="btn-primary"
+                data-on-click="@post('/game/default/running?running=' + (!$running))"
+                data-text="$running ? '⏸️ Pause' : '▶️ Start'">
+            </button>
+            
+            <button 
+                class="btn-secondary"
+                data-on-click="@post('/game/default/reset')">
+                🔄 Clear
+            </button>
+        </div>
+
+        <div class="presets">
+            <h3>📦 Preset Patterns</h3>
+            <div class="preset-grid">
+                <button class="preset-btn" onclick="loadPreset('glider')">
+                    ✈️ Glider
+                </button>
+                <button class="preset-btn" onclick="loadPreset('blinker')">
+                    💫 Blinker
+                </button>
+                <button class="preset-btn" onclick="loadPreset('toad')">
+                    🐸 Toad
+                </button>
+                <button class="preset-btn" onclick="loadPreset('beacon')">
+                    🔦 Beacon
+                </button>
+                <button class="preset-btn" onclick="loadPreset('pulsar')">
+                    ⭐ Pulsar
+                </button>
+                <button class="preset-btn" onclick="loadPreset('gosper')">
+                    🎯 Gosper Gun
+                </button>
+                <button class="preset-btn" onclick="loadPreset('lwss')">
+                    🚀 LWSS
+                </button>
+                <button class="preset-btn" onclick="loadPreset('random')">
+                    🎲 Random
+                </button>
+            </div>
+        </div>
+
+        <div class="grid-container">
+            <canvas id="gameGrid" width="500" height="500"></canvas>
+        </div>
+
+        <div class="info">
+            <h3>📖 How to Play</h3>
+            <ul>
+                <li><strong>Click</strong> on cells to bring them to life or kill them</li>
+                <li><strong>Start</strong> to watch the simulation run automatically</li>
+                <li><strong>Reset</strong> to clear the grid and start over</li>
+            </ul>
+            
+            <h3 style="margin-top: 15px;">⚙️ Rules</h3>
+            <ul>
+                <li>Any live cell with 2-3 neighbors survives</li>
+                <li>Any dead cell with exactly 3 neighbors becomes alive</li>
+                <li>All other cells die or stay dead</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameGrid');
+        const ctx = canvas.getContext('2d');
+        const gridSize = 50;
+        const cellSize = canvas.width / gridSize;
+
+        // Preset patterns
+        const presets = {
+            glider: [
+                [0, 1], [1, 2], [2, 0], [2, 1], [2, 2]
+            ],
+            blinker: [
+                [1, 0], [1, 1], [1, 2]
+            ],
+            toad: [
+                [1, 1], [1, 2], [1, 3],
+                [2, 0], [2, 1], [2, 2]
+            ],
+            beacon: [
+                [0, 0], [0, 1], [1, 0],
+                [2, 3], [3, 2], [3, 3]
+            ],
+            pulsar: [
+                // Top section
+                [0, 2], [0, 3], [0, 4], [0, 8], [0, 9], [0, 10],
+                [2, 0], [2, 5], [2, 7], [2, 12],
+                [3, 0], [3, 5], [3, 7], [3, 12],
+                [4, 0], [4, 5], [4, 7], [4, 12],
+                [5, 2], [5, 3], [5, 4], [5, 8], [5, 9], [5, 10],
+                // Bottom section (mirrored)
+                [7, 2], [7, 3], [7, 4], [7, 8], [7, 9], [7, 10],
+                [8, 0], [8, 5], [8, 7], [8, 12],
+                [9, 0], [9, 5], [9, 7], [9, 12],
+                [10, 0], [10, 5], [10, 7], [10, 12],
+                [12, 2], [12, 3], [12, 4], [12, 8], [12, 9], [12, 10]
+            ],
+            gosper: [
+                // Left square
+                [0, 24],
+                [1, 22], [1, 24],
+                [2, 12], [2, 13], [2, 20], [2, 21], [2, 34], [2, 35],
+                [3, 11], [3, 15], [3, 20], [3, 21], [3, 34], [3, 35],
+                [4, 0], [4, 1], [4, 10], [4, 16], [4, 20], [4, 21],
+                [5, 0], [5, 1], [5, 10], [5, 14], [5, 16], [5, 17], [5, 22], [5, 24],
+                [6, 10], [6, 16], [6, 24],
+                [7, 11], [7, 15],
+                [8, 12], [8, 13]
+            ],
+            lwss: [
+                [0, 1], [0, 4],
+                [1, 0],
+                [2, 0], [2, 4],
+                [3, 0], [3, 1], [3, 2], [3, 3]
+            ],
+            random: null // Will be generated
+        };
+
+        // Load preset pattern
+        async function loadPreset(name) {
+            try {
+                if (name === 'random') {
+                    // First reset
+                    await fetch('/game/default/reset', { method: 'POST' });
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    // Create random pattern
+                    const pattern = [];
+                    for (let i = 0; i < 200; i++) {
+                        const x = Math.floor(Math.random() * gridSize);
+                        const y = Math.floor(Math.random() * gridSize);
+                        pattern.push([y, x]);
+                    }
+                    
+                    const response = await fetch('/game/default/preset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pattern })
+                    });
+                    const state = await response.json();
+                    
+                    const dataEl = document.querySelector('[data-signals]');
+                    if (dataEl) {
+                        dataEl.setAttribute('data-signals', JSON.stringify(state));
+                        drawGrid();
+                    }
+                } else {
+                    const pattern = presets[name];
+                    if (!pattern) return;
+
+                    const response = await fetch('/game/default/preset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pattern })
+                    });
+                    const state = await response.json();
+                    
+                    const dataEl = document.querySelector('[data-signals]');
+                    if (dataEl) {
+                        dataEl.setAttribute('data-signals', JSON.stringify(state));
+                        drawGrid();
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading preset:', error);
+            }
+        }
+
+        // Make loadPreset globally accessible
+        window.loadPreset = loadPreset;
+
+        // Draw grid
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Get grid data from Datastar signals
+            const dataEl = document.querySelector('[data-signals]');
+            if (!dataEl) return;
+            
+            const signals = JSON.parse(dataEl.getAttribute('data-signals') || '{}');
+            const grid = signals.grid || [];
+
+            // Draw cells
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    const alive = grid[y] && grid[y][x];
+                    
+                    if (alive) {
+                        ctx.fillStyle = '#667eea';
+                        ctx.fillRect(
+                            x * cellSize,
+                            y * cellSize,
+                            cellSize - 1,
+                            cellSize - 1
+                        );
+                    }
+                }
+            }
+
+            // Draw grid lines
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 0.5;
+            
+            for (let i = 0; i <= gridSize; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * cellSize, 0);
+                ctx.lineTo(i * cellSize, canvas.height);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(0, i * cellSize);
+                ctx.lineTo(canvas.width, i * cellSize);
+                ctx.stroke();
+            }
+        }
+
+        // Handle canvas clicks
+        canvas.addEventListener('click', async (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) / cellSize);
+            const y = Math.floor((e.clientY - rect.top) / cellSize);
+
+            try {
+                const response = await fetch(`/game/default/toggle?x=${x}&y=${y}`, {
+                    method: 'POST'
+                });
+                const state = await response.json();
+                
+                // Update Datastar signals - this will trigger the mutation observer
+                const dataEl = document.querySelector('[data-signals]');
+                if (dataEl) {
+                    const currentSignals = JSON.parse(dataEl.getAttribute('data-signals') || '{}');
+                    const updatedSignals = {
+                        ...currentSignals,
+                        ...state
+                    };
+                    dataEl.setAttribute('data-signals', JSON.stringify(updatedSignals));
+                }
+            } catch (error) {
+                console.error('Error toggling cell:', error);
+            }
+        });
+
+        // Redraw when signals change
+        const observer = new MutationObserver(() => {
+            drawGrid();
+        });
+
+        const dataEl = document.querySelector('[data-signals]');
+        if (dataEl) {
+            observer.observe(dataEl, {
+                attributes: true,
+                attributeFilter: ['data-signals']
+            });
+        }
+
+        // Initial draw
+        drawGrid();
+        
+        // Periodic redraw
+        setInterval(drawGrid, 100);
+    </script>
+</body>
+</html>
