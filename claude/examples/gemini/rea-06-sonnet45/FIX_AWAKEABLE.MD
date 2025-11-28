@@ -66,48 +66,51 @@ type PaymentCallback struct {
 }
 ```
 
-### 2. Proper Awakeable Resolution Function
+### 2. Awakeable Resolution Implementation
 
-**File**: [`svcs.go:265-310`](file:///home/chaschel/Documents/ibm/go/apps/restate-tutorial/claude/examples/gemini/rea-06-sonnet45/services/svcs.go#L265-L310)
+**File**: [`ingress.go:212-287`](file:///home/chaschel/Documents/ibm/go/apps/restate-tutorial/claude/examples/gemini/rea-06-sonnet45/ingress/ingress.go#L212-L287)
 
-Replaced the placeholder with a production-ready implementation:
+The awakeable resolution logic is implemented directly within the `handlePaymentCallback` endpoint. This is the proper location since awakeable resolution happens at the ingress layer when receiving external callbacks.
+
+**Key Implementation Details**:
 
 ```go
-func ResolveAwakeableViaIngress(ctx context.Context, restateURL, awakeableID string, receipt svcs.PaymentReceipt) error {
+// Inside handlePaymentCallback
+func (i *Ingress) handlePaymentCallback(w http.ResponseWriter, r *http.Request) {
+    // ... validate callback payload ...
+    
+    // Build payment receipt
+    receipt := models.PaymentReceipt{
+        TransactionID: callback.TransactionID,
+        Amount:        callback.Amount,
+        Status:        callback.Status,
+        Success:       callback.Status == "success",
+    }
+
+    // ✅ Use Restate's HTTP API to resolve the awakeable directly
     client := &http.Client{Timeout: 10 * time.Second}
-    
-    // ✅ Use Restate Admin API endpoint
-    url := fmt.Sprintf("%s/restate/awakeables/%s/resolve", restateURL, awakeableID)
-    
-    // ✅ Serialize the payment receipt
+    url := fmt.Sprintf("%s/restate/awakeables/%s/resolve", 
+        RESTATE_INGRESS_URL, callback.AwakeableID)
+
     payloadBytes, err := json.Marshal(receipt)
-    if err != nil {
-        return fmt.Errorf("failed to marshal receipt: %w", err)
-    }
-    
-    // ✅ Make HTTP POST to resolve the awakeable
-    req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
-    if err != nil {
-        return fmt.Errorf("failed to create request: %w", err)
-    }
-    req.Header.Set("Content-Type", "application/json")
-    
-    resp, err := client.Do(req)
-    if err != nil {
-        return fmt.Errorf("failed to resolve awakeable: %w", err)
-    }
-    defer resp.Body.Close()
+    // ... make POST request ...
     
     // ✅ Handle errors with detailed context
     if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
         bodyBytes, _ := io.ReadAll(resp.Body)
-        return fmt.Errorf("restate rejected awakeable resolution, status: %d, body: %s", 
+        log.Printf("Restate rejected awakeable resolution: status %d, body: %s", 
             resp.StatusCode, string(bodyBytes))
+        http.Error(w, "Restate rejected awakeable resolution", resp.StatusCode)
+        return
     }
-    
-    return nil
 }
 ```
+
+**Why inline instead of a separate function?**
+- Simple HTTP POST operation doesn't warrant extraction
+- Single use case (payment callbacks)
+- Keeps the flow obvious and easy to follow
+- Proper separation: ingress layer handles external interactions
 
 **Key Features**:
 - Uses Restate's Admin API `/restate/awakeables/{id}/resolve` endpoint
@@ -468,11 +471,12 @@ if err != nil {
 
 ### What Was Fixed
 
-1. ✅ **Replaced placeholder function** with production-ready `ResolveAwakeableViaIngress`
-2. ✅ **Added payment callback endpoint** to `ingress.go`
+1. ✅ **Removed unused placeholder function** - `ResolveAwakeableManually` was never called
+2. ✅ **Added payment callback endpoint** to `ingress.go` with inline awakeable resolution
 3. ✅ **Enhanced data models** with `PaymentCallback` type
 4. ✅ **Integrated with Restate HTTP API** for awakeable resolution
 5. ✅ **Documented complete workflow** from checkout to payment confirmation
+6. ✅ **Fixed package declaration** in `ingress/models/types.go` from `ingress` to `models`
 
 ### Best Practices Demonstrated
 

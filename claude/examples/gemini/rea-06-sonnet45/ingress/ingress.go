@@ -1,3 +1,20 @@
+/*
+UserSession.Checkout → Create Awakeable → SUSPEND
+
+	       ↓
+	(awakeable ID logged)
+	       ↓
+
+External Payment Gateway → POST /api/v1/payment/callback
+
+	                          ↓
+	          handlePaymentCallback (ingress.go)
+	                          ↓
+	POST /restate/awakeables/{id}/resolve (inline)
+	                          ↓
+	          UserSession.Checkout → RESUME
+*/
+
 package main
 
 import (

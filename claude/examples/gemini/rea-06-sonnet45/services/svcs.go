@@ -1,12 +1,24 @@
+/*
+UserSession.Checkout → Create Awakeable → SUSPEND
+
+	       ↓
+	(awakeable ID logged)
+	       ↓
+
+External Payment Gateway → POST /api/v1/payment/callback
+
+	                          ↓
+	          handlePaymentCallback (ingress.go)
+	                          ↓
+	POST /restate/awakeables/{id}/resolve (inline)
+	                          ↓
+	          UserSession.Checkout → RESUME
+*/
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	models "svcs/models"
 	"time"
@@ -128,6 +140,8 @@ func (UserSession) Checkout(ctx restate.ObjectContext, orderID string) (bool, er
 
 	// Execution Suspends: Wait for external system to resolve the awakeable
 	receipt, err := awakeable.Result()
+	// the awakeable will be resolved or rejected at the ingress endpoint below
+	// r.Post("/api/v1/payment/callback", ingressHandler.handlePaymentCallback)
 	if err != nil {
 		// If awakeable failed, throw terminal error
 		ctx.Log().Error("Payment failed", "order_id", orderID, "error", err)
@@ -264,51 +278,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Restate server failed to start: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// ResolveAwakeableViaIngress resolves an awakeable using the Restate HTTP API
-// This is typically called from an external system callback (e.g., payment gateway webhook)
-//
-// IMPORTANT: This function should be called from the ingress layer (ingress.go)
-// when external systems send callbacks. It uses Restate's Admin API to resolve
-// awakeables that are waiting in suspended handler executions.
-//
-// Example usage from ingress endpoint:
-//
-//	receipt := models.PaymentReceipt{
-//	  TransactionID: "txn_12345",
-//	  Amount: 10000,
-//	  Status: "success",
-//	  Success: true,
-//	}
-//	err := ResolveAwakeableViaIngress(ctx, "http://localhost:9080", awakeableID, receipt)
-func ResolveAwakeableViaIngress(ctx context.Context, restateURL, awakeableID string, receipt models.PaymentReceipt) error {
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	// Restate Admin API endpoint for awakeable resolution
-	url := fmt.Sprintf("%s/restate/awakeables/%s/resolve", restateURL, awakeableID)
-
-	payloadBytes, err := json.Marshal(receipt)
-	if err != nil {
-		return fmt.Errorf("failed to marshal receipt: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to resolve awakeable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("restate rejected awakeable resolution, status: %d, body: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return nil
 }
