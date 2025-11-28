@@ -1,10 +1,10 @@
-# Why I'm Betting Big on Restate (and You Should Too)
+### Why I'm Betting Big on Restate (and You Should Too)
 
 Hey everyone,
 
 I've been vibe coding with Restate lately, learning my way through distributed systems. You know the drill: prompt engineering, context engineering, and wrestling with Go code until it finally compiles and runs beautifully. It's been a journey and I even created a framework on top of the Restate Go SDK to make it even easier to build resilient backend apps.
 
-It's at https://github.com/pithomlabs/rea (think of it as the business logic layer behind your Web services).
+It's at https://github.com/pithomlabs/rea (think of it as the **business logic layer** behind your Web services).
 
 Let's be real: distributed systems are hard. The complexity of managing synchronous and asynchronous code, handling failures, and keeping everything consistent is usually a nightmare. But Restate nailed it. It makes writing durable, resilient code feel surprisingly easy. It cuts through the noise and lets you focus on the business logic, not the plumbing. And when things get really tough, the `pithomlabs/rea` framework is there to slash the boilerplate even further.
 
