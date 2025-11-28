@@ -8,9 +8,7 @@ It's at https://github.com/pithomlabs/rea (think of it as the **business logic l
 
 Let's be real: distributed systems are hard. The complexity of managing synchronous and asynchronous code, handling failures, and keeping everything consistent is usually a nightmare. But Restate nailed it. It makes writing durable, resilient code feel surprisingly easy. It cuts through the noise and lets you focus on the business logic, not the plumbing. And when things get really tough, the `pithomlabs/rea` framework is there to slash the boilerplate even further.
 
-Watch a quick overview [here](https://www.dropbox.com/scl/fi/r7y4o9rj2wgh53gattadv/Bulletproof_Apps_w__Restate.mp4?rlkey=9lrhnfoz2q9n7bpm6vrhhu340&st=g3fqznmj&dl=0)
-
-Or listen to the podcast [here](https://www.dropbox.com/scl/fi/8ju18hh9yn1ws6woaikqa/Go_SDK_Durable_Execution.mp3?rlkey=bwty3oqxk5ksg8e47lrkqhj1u&st=48jzx6vt&dl=0)
+Watch a [quick video overview](https://www.dropbox.com/scl/fi/r7y4o9rj2wgh53gattadv/Bulletproof_Apps_w__Restate.mp4?rlkey=9lrhnfoz2q9n7bpm6vrhhu340&st=g3fqznmj&dl=0) or [listen to the podcast](https://www.dropbox.com/scl/fi/8ju18hh9yn1ws6woaikqa/Go_SDK_Durable_Execution.mp3?rlkey=bwty3oqxk5ksg8e47lrkqhj1u&st=48jzx6vt&dl=0)
 
 This isn't just about code, though. It's about survival. In this volatile job market, with AI reshaping everything, [we need to adapt](https://medium.com/@pithomlabs/the-time-to-upskill-is-now-building-resilience-in-the-age-of-ai-5c1b5b7aade4). I want to build a community of learners, builders, and writers who are ready to thrive in this new era.
 
