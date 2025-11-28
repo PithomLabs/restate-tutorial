@@ -22,7 +22,7 @@ I'm open-sourcing the entire `restate-tutorial` folder. It's yours to learn from
 **Call to Action:**
 1.  Fork `github.com/pithomlabs/restate-tutorial`.
 2.  Jump into the GitHub Discussions.
-3.  Write about your Dev/Ops experience. Send it my way, and I'll publish it on the PithomLabs Medium account.
+3.  Write about your Dev/Ops experience. Send it my way, and I'll publish it on the [PithomLabs Medium account](https://medium.com/@pithomlabs)
 4.  Profit!
 
 Let's build something resilient together. And most of all, enjoy the ride!
