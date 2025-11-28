@@ -17,6 +17,8 @@ I also want to minimize the stigma around "vibe coding." It's not just hacking; 
 **Here's the plan:**
 I'm open-sourcing the entire `restate-tutorial` folder. It's yours to learn from, build on, and break.
 
+The only requirement is your business logic resides in Restate. The rest of your application can be built with any Web framework in Go (serving as ingress client), databases, message queues, and other services.
+
 **Call to Action:**
 1.  Fork `github.com/pithomlabs/restate-tutorial`.
 2.  Jump into the GitHub Discussions.

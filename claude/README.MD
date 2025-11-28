@@ -1,3 +1,8 @@
+# TL;DR
+
+The only requirement is your business logic resides in Restate. The rest of your application can be built with any Web framework in Go, databases, message queues, and other services.
+
+
 # Rea Framework
 
 > **High-level abstraction framework for building robust, durable distributed applications with Restate**
