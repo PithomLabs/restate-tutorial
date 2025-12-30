@@ -108,7 +108,7 @@ Traditional distributed systems are hard:
 **Build:** Stripe payment integration  
 **Time:** 2-3 hours  
 
-#### [Module 9: Microservices Orchestration](./09-orchestration/)
+#### [Module 9: Microservices Orchestration](./09-microservices/)
 **Learn:** Workflows, complex orchestration, parallel execution  
 **Build:** E-commerce checkout workflow  
 **Time:** 3-4 hours  
