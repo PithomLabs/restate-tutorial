@@ -79,9 +79,9 @@ Traditional distributed systems are hard:
 
 ### Core Patterns (Modules 4-6)
 
-#### [Module 4: Service Communication](./04-service-communication/)
-**Learn:** Request-response, one-way calls, delayed messages  
-**Build:** Multi-service order system  
+#### [Module 4: Workflows - Long-Running Orchestration](./05-workflows/)
+**Learn:** How workflows extend Virtual Objects with special capabilities for long-running orchestrations 
+**Build:** Durable workflows with human-in-the-loop and async await patterns
 **Time:** 2-3 hours  
 
 #### [Module 5: Idempotency](./07-idempotency/)
