@@ -84,7 +84,7 @@ Traditional distributed systems are hard:
 **Build:** Multi-service order system  
 **Time:** 2-3 hours  
 
-#### [Module 5: Idempotency](./05-idempotency/)
+#### [Module 5: Idempotency](./07-idempotency/)
 **Learn:** Exactly-once semantics, idempotency keys  
 **Build:** Payment deduplication system  
 **Time:** 2 hours  
