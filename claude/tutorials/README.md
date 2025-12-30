@@ -60,7 +60,7 @@ Traditional distributed systems are hard:
 
 ### Foundation (Modules 1-3)
 
-#### [Module 1: Getting Started](./01-getting-started/)
+#### [Module 1: Getting Started](./01-foundation/)
 **Learn:** Restate fundamentals, setup, first service  
 **Build:** Hello World service with durable execution  
 **Time:** 1-2 hours  
