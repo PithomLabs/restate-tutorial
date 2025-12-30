@@ -66,9 +66,9 @@ Traditional distributed systems are hard:
 **Time:** 1-2 hours  
 
 #### [Module 2: Resilient Stateless APIs - Side Effects](./02-side-effects/)
-**Learn:** Understand what side effects are and why they need special handling
-**Build:** Build a real-world API aggregation service
-**Time:** 2-3 hours  
+- **Learn:** Understand what side effects are and why they need special handling
+- **Build:** Build a real-world API aggregation service
+- **Time:** 2-3 hours  
 
 #### [Module 3: State Management](./04-virtual-objects/)
 **Learn:** Virtual Objects, key-value state  
