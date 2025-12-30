@@ -98,9 +98,9 @@ Traditional distributed systems are hard:
 
 ### Integration (Modules 7-9)
 
-#### [Module 7: Event-Driven Architecture](./07-event-driven/)
-**Learn:** Kafka integration, event sourcing, CQRS  
-**Build:** Event-driven order processing  
+#### [Module 7: Testing Restate Applications](./07-testing/)
+**Learn:** Unit testing, mock dependencies, integration testing  
+**Build:** Test-driven development (TDD) with Restate
 **Time:** 3-4 hours  
 
 #### [Module 8: External Integration](./08-external-integration/)
