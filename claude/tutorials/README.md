@@ -70,7 +70,7 @@ Traditional distributed systems are hard:
 **Build:** Payment processing with automatic retries  
 **Time:** 2-3 hours  
 
-#### [Module 3: State Management](./03-state-management/)
+#### [Module 3: State Management](./04-virtual-objects/)
 **Learn:** Virtual Objects, key-value state  
 **Build:** Shopping cart service  
 **Time:** 2-3 hours  
